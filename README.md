@@ -34,3 +34,13 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/deployment) for more details.
+
+## TINAN AI — Eureka Tokenization DApp
+
+Next.js 13 (app router) static export for Cloudflare Pages (`www.tinaneureka.com`).
+
+- Build command: `npm run build` — output directory: `out`
+- SPA routing: `public/_redirects` serves the project shell for `/project/*`
+- Contracts (OpenZeppelin): `contracts/`; compile with `npm run compile:contracts` (unaudited)
+- Config: copy `.env.example`; only public values, never secrets/keys. AI API URL, RPCs and contract addresses are per-env.
+- Not implemented (shown as DEMO / COMING SOON): ERC-721/1155 deploy UI, on-chain registry browsing, Solana adapter, community.

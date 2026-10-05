@@ -1,0 +1,2 @@
+# Cloudflare Pages SPA fallback for dynamic client routes
+/project/*  /project/demo/index.html  200
