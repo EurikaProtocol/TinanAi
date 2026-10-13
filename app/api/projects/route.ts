@@ -3,7 +3,7 @@ import { getRequestOwnerId } from '@/lib/auth';
 import { getOpenAICompatibleConfig, getProviderMode, ProviderError } from '@/lib/agent/openai-provider';
 import { allowRequest } from '@/lib/agent/task-store';
 import { createProjectTask, getProjectForOwner, listProjects } from '@/lib/builder/project-store';
-import { runProjectGeneration } from '@/lib/builder/runner';
+import { runProjectPlanning } from '@/lib/builder/runner';
 
 export const runtime = 'nodejs';
 const maxBodyBytes = 16 * 1024;
@@ -52,8 +52,15 @@ export async function POST(request: Request) {
   if ('projectId' in body && !(await getProjectForOwner(body.projectId as string, ownerId))) {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   }
-  const task = await createProjectTask(requirements, ownerId, 'generation', 'projectId' in body ? body.projectId as string : null);
-  after(() => runProjectGeneration(task));
+  const task = await createProjectTask(
+    requirements,
+    ownerId,
+    'generation',
+    'projectId' in body ? body.projectId as string : null,
+    null,
+    'planning',
+  );
+  after(() => runProjectPlanning(task));
   return NextResponse.json({ task, persistence: 'cloudflare-d1-r2' }, { status: 202 });
 }
 

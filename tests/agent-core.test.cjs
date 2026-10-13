@@ -8,6 +8,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
 const {
+  createProjectPlan,
   createModelPlan,
   generateProject,
   getOpenAICompatibleConfig,
@@ -21,6 +22,7 @@ const { executeTool, hasPermission } = require('../.test-build/lib/agent/tools.j
 const {
   createProject,
   createProjectTask,
+  approveProjectTask,
   getProject,
   getProjectForOwner,
   getProjectTaskForOwner,
@@ -29,11 +31,12 @@ const {
   readProjectFile,
   reserveProjectRepair,
   rollbackProject,
+  setProjectTaskPlan,
   validateRelativeProjectPath,
   writeGeneratedFiles,
 } = require('../.test-build/lib/builder/project-store.js');
 const { createProjectArchive } = require('../.test-build/lib/builder/archive.js');
-const { runProjectGeneration } = require('../.test-build/lib/builder/runner.js');
+const { runProjectGeneration, runProjectPlanning } = require('../.test-build/lib/builder/runner.js');
 const { runSandboxCheck } = require('../.test-build/lib/builder/sandbox.js');
 const { gunzipSync } = require('node:zlib');
 const { isActiveTaskStatus } = require('../.test-build/lib/agent/types.js');
@@ -175,6 +178,39 @@ test('project provider generates a validated specification, task plan, technolog
   assert.match(requestBody.messages[1].content, /greeting app/);
   assert.equal(generated.name, generatedProject.name);
   assert.deepEqual(generated.files, generatedProject.files);
+});
+
+test('project plan provider validates structured planning output before generation', async () => {
+  const plan = {
+    summary: 'A responsive services site for a local studio.',
+    technology: ['HTML', 'CSS'],
+    features: ['Service overview', 'Contact form'],
+    steps: ['Create semantic page structure', 'Style responsive layouts'],
+  };
+  const result = await createProjectPlan(
+    'Build a services website',
+    undefined,
+    validEnv,
+    async (_url, options) => {
+      const request = JSON.parse(options.body);
+      assert.equal(request.model, validEnv.TINAN_AI_MODEL);
+      assert.match(request.messages[0].content, /Do not generate source code/);
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(plan) } }] }), { status: 200 });
+    },
+  );
+  assert.deepEqual(result, plan);
+  await assert.rejects(
+    createProjectPlan('Build anything', undefined, validEnv, async () =>
+      new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"bad","technology":[],"features":[],"steps":[]}' } }] }), { status: 200 })),
+    /invalid project plan/,
+  );
+  assert.equal(
+    require('../.test-build/lib/agent/openai-provider.js').getOpenAICompatibleConfig({
+      TINAN_AI_API_KEY: 'test-key',
+      TINAN_AI_MODEL: 'test-model',
+    }).baseUrl,
+    'https://openrouter.ai/api/v1',
+  );
 });
 
 test('provider failures and invalid provider plans fail closed', async () => {
@@ -395,6 +431,79 @@ test('project metadata, files, tasks, and rollback snapshots survive fresh stora
     database.prepare('UPDATE project_tasks SET record_json = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(interrupted), expiredTime, interrupted.id);
     assert.equal((await freshProjectStore().getProjectTaskForOwner(interrupted.id, ownerA)).status, 'failed');
+  } finally {
+    resetProjectStorage();
+  }
+});
+
+test('project generation requires plan approval and persists approval across store reloads', async () => {
+  resetProjectStorage();
+  const previous = {
+    provider: process.env.TINAN_AI_PROVIDER,
+    key: process.env.TINAN_AI_API_KEY,
+    model: process.env.TINAN_AI_MODEL,
+  };
+  process.env.TINAN_AI_PROVIDER = 'openai-compatible';
+  process.env.TINAN_AI_API_KEY = 'server-test-key';
+  process.env.TINAN_AI_MODEL = 'test-model';
+  const plan = {
+    summary: 'Create a compact services site.',
+    technology: ['HTML', 'CSS'],
+    features: ['Service cards', 'Contact details'],
+    steps: ['Create the semantic page', 'Add responsive styling'],
+  };
+  try {
+    const task = await createProjectTask('Build a services site', ownerA, 'generation', null, null, 'planning');
+    await runProjectPlanning(task, async () => plan);
+    assert.equal(task.status, 'awaiting_approval');
+    assert.deepEqual(task.plan, plan);
+    assert.equal(await approveProjectTask(task.id, ownerB), undefined);
+    assert.equal((await freshProjectStore().getProjectTaskForOwner(task.id, ownerA)).status, 'awaiting_approval');
+    const approved = await freshProjectStore().approveProjectTask(task.id, ownerA);
+    assert.equal(approved.status, 'generating');
+    assert.equal((await freshProjectStore().getProjectTaskForOwner(task.id, ownerA)).status, 'generating');
+    await runProjectGeneration(approved, async () => generatedProject);
+    assert.equal(approved.status, 'completed');
+    assert.ok(await getProject(approved.projectId, ownerA));
+
+    const declined = await createProjectTask('Do not proceed', ownerA, 'generation', null, null, 'planning');
+    assert.equal(await setProjectTaskPlan(declined, plan), true);
+    const { cancelProjectTask } = require('../.test-build/lib/builder/project-store.js');
+    assert.equal((await cancelProjectTask(declined.id, ownerA)).status, 'cancelled');
+    assert.equal(await freshProjectStore().approveProjectTask(declined.id, ownerA).then((value) => value.status), 'cancelled');
+  } finally {
+    for (const [key, value] of Object.entries({
+      TINAN_AI_PROVIDER: previous.provider,
+      TINAN_AI_API_KEY: previous.key,
+      TINAN_AI_MODEL: previous.model,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    resetProjectStorage();
+  }
+});
+
+test('rollback cleanup failures retain metadata and are retried on the next project listing', async () => {
+  resetProjectStorage();
+  const project = await createProject(generatedProject, ownerA);
+  const updated = await writeGeneratedFiles(project.id, {
+    ...generatedProject,
+    files: [{ path: 'src/index.ts', content: 'new content\n' }],
+  }, ownerA);
+  const originalDelete = projectBindings.TINAN_PROJECT_FILES.delete;
+  projectBindings.TINAN_PROJECT_FILES.delete = async () => { throw new Error('temporary R2 failure'); };
+  try {
+    const restored = await rollbackProject(updated.id, ownerA);
+    assert.deepEqual(restored.files, ['src/index.ts']);
+    assert.equal(await readProjectFile(project.id, 'src/index.ts', ownerA), generatedProject.files[0].content);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM project_backups WHERE project_id = ?').get(project.id).count, 1);
+  } finally {
+    projectBindings.TINAN_PROJECT_FILES.delete = originalDelete;
+  }
+  try {
+    await freshProjectStore().listProjects(ownerA);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM project_backups WHERE project_id = ?').get(project.id).count, 0);
   } finally {
     resetProjectStorage();
   }

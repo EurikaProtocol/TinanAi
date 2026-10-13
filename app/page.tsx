@@ -1,5 +1,5 @@
-import AgentWorkspace from './components/agent-workspace';
+import MarketingHome from './components/marketing-home';
 
 export default function Home() {
-  return <AgentWorkspace />;
+  return <MarketingHome />;
 }
