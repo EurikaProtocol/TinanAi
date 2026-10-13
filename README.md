@@ -81,7 +81,7 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 
 This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
 
-The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinan-ai.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
+The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
 
 ### Worker runtime settings
 
@@ -124,7 +124,7 @@ The app and APIs require a single-owner HTTP Basic Auth credential configured wi
 Only run this after configuring `TINAN_AI_PROVIDER=openai-compatible`, the OpenRouter key as server-side `TINAN_AI_API_KEY`, the exact OpenRouter model ID as `TINAN_AI_MODEL`, `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1`, and the two `TINAN_AUTH_*` values on the application host. The command below makes a real provider request and may incur charges; it does not pass the OpenRouter key to curl. Set `TINAN_AUTH_USERNAME` locally and curl will prompt for the corresponding Basic Auth password.
 
 ```bash
-APP_ORIGIN='https://tinan-ai.<account-subdomain>.workers.dev'
+APP_ORIGIN='https://tinanai2.<account-subdomain>.workers.dev'
 TASK_ID=$(curl --fail-with-body --silent --show-error \
   --user "$TINAN_AUTH_USERNAME" \
   --header "Origin: $APP_ORIGIN" \
