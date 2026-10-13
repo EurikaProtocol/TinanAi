@@ -13,7 +13,7 @@ export async function GET(request: Request, context: Context) {
   const relative = new URL(request.url).searchParams.get('path');
   if (!relative || !project.files.includes(relative)) return NextResponse.json({ error: 'Project file not found.' }, { status: 404 });
   try {
-    return NextResponse.json({ path: relative, content: await readProjectFile(id, relative) });
+    return NextResponse.json({ path: relative, content: await readProjectFile(id, relative, ownerId) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Unable to read project file.' }, { status: 400 });
   }

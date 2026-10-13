@@ -10,7 +10,7 @@ export async function POST(request: Request, context: Context) {
   const { id } = await context.params;
   if (!await getProjectForOwner(id, ownerId)) return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   try {
-    return NextResponse.json({ project: await rollbackProject(id) });
+    return NextResponse.json({ project: await rollbackProject(id, ownerId) });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Project rollback failed.' }, { status: 409 });
   }

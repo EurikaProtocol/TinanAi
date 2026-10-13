@@ -18,6 +18,23 @@
       "service": "tinan-ai"
     }
   ],
+  "d1_databases": [
+    {
+      "binding": "TINAN_DB",
+      "database_name": "tinan-ai-metadata",
+      "database_id": "00000000000000000000000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "TINAN_PROJECT_FILES",
+      "bucket_name": "tinan-ai-project-files"
+    }
+  ],
+  "vars": {
+    "TINAN_SANDBOX_VERIFIED": "false"
+  },
   "observability": {
     "enabled": true
   }

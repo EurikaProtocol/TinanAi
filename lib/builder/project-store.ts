@@ -1,8 +1,6 @@
-import { promises as fs } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { GeneratedProject } from '../agent/openai-provider';
+import { getProjectStorageBindings } from './cloudflare-storage';
 
 export type ProjectRecord = {
   id: string;
@@ -42,38 +40,89 @@ export type ProjectTask = {
   updatedAt: string;
 };
 
-type BuilderRuntime = {
-  tasks: Map<string, ProjectTask>;
+type ProjectRow = { record_json: string };
+type TaskRow = { record_json: string };
+type BackupRow = { snapshot_id: string; files_json: string };
+
+type ProjectRuntime = {
   controllers: Map<string, AbortController>;
-  backups: Map<string, Map<string, string>>;
-  lockedProjects: Set<string>;
-  repairReservations: Set<string>;
 };
 
-const globalBuilder = globalThis as typeof globalThis & { tinanBuilderRuntime?: BuilderRuntime };
-const metadataName = '.tinan-project.json';
-const forbiddenPart = /^(?:\.|\.git|\.next|node_modules|\.tinan-.*|\.env(?:\..*)?|.*(?:secret|credential|private[-_]?key).*)$/i;
+const runtimeGlobal = globalThis as typeof globalThis & { tinanProjectRuntime?: ProjectRuntime };
 
-function state(): BuilderRuntime {
-  if (!globalBuilder.tinanBuilderRuntime) {
-    globalBuilder.tinanBuilderRuntime = {
-      tasks: new Map(),
-      controllers: new Map(),
-      backups: new Map(),
-      lockedProjects: new Set(),
-      repairReservations: new Set(),
-    };
-  }
-  return globalBuilder.tinanBuilderRuntime;
+function runtime(): ProjectRuntime {
+  if (!runtimeGlobal.tinanProjectRuntime) runtimeGlobal.tinanProjectRuntime = { controllers: new Map() };
+  return runtimeGlobal.tinanProjectRuntime;
 }
 
-export function createProjectTask(
+const metadataKey = (ownerId: string, projectId: string, relative: string) =>
+  `projects/${ownerId}/${projectId}/files/${relative}`;
+const snapshotKey = (ownerId: string, projectId: string, snapshotId: string, relative: string) =>
+  `projects/${ownerId}/${projectId}/snapshots/${snapshotId}/${relative}`;
+const forbiddenPart = /^(?:\.|\.git|\.next|node_modules|\.tinan-.*|\.env(?:\..*)?|.*(?:secret|credential|private[-_]?key).*)$/i;
+
+export function validateRelativeProjectPath(input: string): string {
+  if (typeof input !== 'string') throw new Error('Project file path is not permitted.');
+  const normalized = input.replace(/\\/g, '/');
+  const parts = normalized.split('/');
+  if (!normalized || normalized.length > 240 || normalized.startsWith('/') ||
+      parts.some((part) => !part || part === '.' || part === '..' || forbiddenPart.test(part)) ||
+      /[\0<>:"|?*]/.test(normalized) || /\.(?:pem|key|p12|pfx)$/i.test(normalized) ||
+      normalized.toLowerCase() === 'deployment.config.json') {
+    throw new Error('Project file path is not permitted.');
+  }
+  return normalized;
+}
+
+function validateFiles(files: { path: string; content: string }[]): { path: string; content: string }[] {
+  if (!Array.isArray(files) || files.length < 1 || files.length > 24) {
+    throw new Error('Project workspace limit reached (24 files or 256 KiB of source).');
+  }
+  const seen = new Set<string>();
+  let totalBytes = 0;
+  return files.map((entry) => {
+    const path = validateRelativeProjectPath(entry.path);
+    if (seen.has(path)) throw new Error('Duplicate project file path.');
+    seen.add(path);
+    if (typeof entry.content !== 'string') throw new Error('Project file content must be text.');
+    totalBytes += Buffer.byteLength(entry.content, 'utf8');
+    if (totalBytes > 256 * 1024) throw new Error('Project workspace limit reached (24 files or 256 KiB of source).');
+    return { path, content: entry.content };
+  });
+}
+
+async function readRecord(id: string, ownerId: string): Promise<ProjectRecord | undefined> {
+  if (!/^[0-9a-f-]{36}$/i.test(id) || !/^[a-f0-9]{64}$/.test(ownerId)) return undefined;
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const row = await TINAN_DB.prepare(
+    'SELECT record_json FROM projects WHERE id = ? AND owner_id = ?',
+  ).bind(id, ownerId).first<ProjectRow>();
+  if (!row) return undefined;
+  try {
+    const record = JSON.parse(row.record_json) as ProjectRecord;
+    if (record.id !== id || record.ownerId !== ownerId || !Array.isArray(record.files)) return undefined;
+    return record;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveRecord(record: ProjectRecord): Promise<void> {
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    'UPDATE projects SET record_json = ?, updated_at = ? WHERE id = ? AND owner_id = ?',
+  ).bind(JSON.stringify(record), record.updatedAt, record.id, record.ownerId).run();
+  if (!result.meta?.changes) throw new Error('Project not found.');
+}
+
+export async function createProjectTask(
   requirements: string,
   ownerId: string,
   kind: ProjectTask['kind'] = 'generation',
   projectId: string | null = null,
   check: string | null = null,
-): ProjectTask {
+): Promise<ProjectTask> {
+  if (projectId && !await getProjectForOwner(projectId, ownerId)) throw new Error('Project not found.');
   const now = new Date().toISOString();
   const task: ProjectTask = {
     id: randomUUID(),
@@ -88,273 +137,217 @@ export function createProjectTask(
     createdAt: now,
     updatedAt: now,
   };
-  state().tasks.set(task.id, task);
-  state().controllers.set(task.id, new AbortController());
-  while (state().tasks.size > 50) {
-    const oldest = state().tasks.keys().next().value as string | undefined;
-    if (!oldest) break;
-    state().tasks.delete(oldest);
-    state().controllers.delete(oldest);
-  }
+  const { TINAN_DB } = await getProjectStorageBindings();
+  await TINAN_DB.prepare(
+    'INSERT INTO project_tasks (id, owner_id, project_id, status, kind, record_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).bind(task.id, ownerId, projectId, task.status, kind, JSON.stringify(task), now, now).run();
+  runtime().controllers.set(task.id, new AbortController());
   return task;
 }
 
-export function getProjectTask(id: string): ProjectTask | undefined {
-  return state().tasks.get(id);
-}
-
-export function getProjectTaskForOwner(id: string, ownerId: string): ProjectTask | undefined {
-  const task = getProjectTask(id);
-  return task?.ownerId === ownerId ? task : undefined;
-}
-
-export function countRunningChecks(ownerId: string): number {
-  return Array.from(state().tasks.values()).filter((task) =>
-    task.ownerId === ownerId && task.kind === 'check' && task.status === 'generating',
-  ).length;
-}
-
-export function acquireProjectLock(id: string): boolean {
-  const locks = state().lockedProjects;
-  if (locks.has(id)) return false;
-  locks.add(id);
-  return true;
-}
-
-export function releaseProjectLock(id: string): void {
-  state().lockedProjects.delete(id);
-}
-
-export async function reserveProjectRepair(id: string): Promise<ProjectRecord> {
-  const reservations = state().repairReservations;
-  if (reservations.has(id)) throw new Error('A repair attempt is already in progress.');
-  reservations.add(id);
+export async function getProjectTask(id: string, ownerId: string): Promise<ProjectTask | undefined> {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined;
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const row = await TINAN_DB.prepare(
+    'SELECT record_json FROM project_tasks WHERE id = ? AND owner_id = ?',
+  ).bind(id, ownerId).first<TaskRow>();
+  if (!row) return undefined;
   try {
-    const root = await ensureRoot();
-    const directory = projectDirectory(root, id);
-    const record = await getProject(id);
-    if (!record) throw new Error('Project not found.');
-    if (record.repairAttempts >= 1) throw new Error('The single bounded AI repair attempt has already been used.');
-    if (record.checks[0]?.status !== 'failed') throw new Error('Run a failed sandbox check before requesting a repair.');
-    record.repairAttempts += 1;
-    record.logs.unshift({ message: 'User authorized the project’s single bounded AI repair attempt.', timestamp: new Date().toISOString() });
-    record.logs = record.logs.slice(0, 30);
-    record.updatedAt = new Date().toISOString();
-    await writeRecord(directory, record);
-    return record;
-  } catch (error) {
-    reservations.delete(id);
-    throw error;
-  }
-}
-
-export function releaseProjectRepair(id: string): void {
-  state().repairReservations.delete(id);
-}
-
-export function getProjectTaskSignal(id: string): AbortSignal | undefined {
-  return state().controllers.get(id)?.signal;
-}
-
-export function updateProjectTask(id: string, status: ProjectTask['status'], message: string): void {
-  const task = getProjectTask(id);
-  if (!task || task.status !== 'generating') return;
-  task.status = status;
-  task.progress.push(message);
-  task.updatedAt = new Date().toISOString();
-  if (status === 'failed') task.errors.push(message);
-}
-
-export function cancelProjectTask(id: string, ownerId: string): ProjectTask | undefined {
-  const task = getProjectTaskForOwner(id, ownerId);
-  if (!task) return undefined;
-  if (task.status === 'generating') {
-    state().controllers.get(id)?.abort();
-    updateProjectTask(id, 'cancelled', 'Generation cancelled by the user.');
-  }
-  return task;
-}
-
-export function workspaceRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env.TINAN_PROJECTS_DIR?.trim();
-  return configured ? path.resolve(configured) : path.join(os.tmpdir(), 'tinan-ai-projects');
-}
-
-export function validateRelativeProjectPath(input: string): string {
-  const normalized = input.replace(/\\/g, '/');
-  const parts = normalized.split('/');
-  if (!normalized || normalized.length > 240 || normalized.startsWith('/') ||
-      parts.some((part) => !part || part === '.' || part === '..' || forbiddenPart.test(part)) ||
-      /[\0<>:"|?*]/.test(normalized) || /\.(?:pem|key|p12|pfx)$/i.test(normalized) ||
-      normalized.toLowerCase() === 'deployment.config.json') {
-    throw new Error('Project file path is not permitted.');
-  }
-  return normalized;
-}
-
-async function ensureRoot(): Promise<string> {
-  const root = workspaceRoot();
-  await fs.mkdir(root, { recursive: true, mode: 0o700 });
-  const realRoot = await fs.realpath(root);
-  await fs.chmod(realRoot, 0o700);
-  return realRoot;
-}
-
-function projectDirectory(root: string, id: string): string {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Invalid project id.');
-  return path.join(root, id);
-}
-
-async function readRecord(directory: string): Promise<ProjectRecord> {
-  const metadataPath = path.join(directory, metadataName);
-  const stat = await fs.lstat(metadataPath);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('Project metadata is invalid.');
-  const record = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as ProjectRecord;
-  if (!record || !/^[0-9a-f-]{36}$/i.test(record.id) || !/^[a-f0-9]{64}$/.test(record.ownerId) || !Array.isArray(record.files)) {
-    throw new Error('Project metadata is invalid.');
-  }
-  record.latestDiff ??= [];
-  record.logs ??= [];
-  record.checks ??= [];
-  record.repairAttempts ??= 0;
-  record.deploymentDraft ??= {
-    status: 'draft',
-    target: null,
-    buildCommand: 'npm run build',
-    automaticDeployment: false,
-    requiresManualApproval: true,
-  };
-  return record;
-}
-
-async function writeRecord(directory: string, record: ProjectRecord): Promise<void> {
-  const target = path.join(directory, metadataName);
-  const temp = path.join(directory, `.metadata-${randomUUID()}.tmp`);
-  await fs.writeFile(temp, JSON.stringify(record, null, 2), { mode: 0o600, flag: 'wx' });
-  await fs.rename(temp, target);
-}
-
-async function safeFile(directory: string, relative: string): Promise<string> {
-  const normalized = validateRelativeProjectPath(relative);
-  const root = await fs.realpath(directory);
-  const file = path.resolve(root, normalized);
-  if (!file.startsWith(`${root}${path.sep}`)) throw new Error('Project file path is outside the workspace.');
-  let cursor = root;
-  for (const part of normalized.split('/')) {
-    cursor = path.join(cursor, part);
-    try {
-      const stat = await fs.lstat(cursor);
-      if (stat.isSymbolicLink()) throw new Error('Symbolic links are not permitted in project files.');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
-  return file;
-}
-
-export async function createProject(generated: GeneratedProject, ownerId: string): Promise<ProjectRecord> {
-  if ((await listProjects(ownerId)).length >= 100) throw new Error('Project storage limit reached (100 projects).');
-  const root = await ensureRoot();
-  const id = randomUUID();
-  const directory = projectDirectory(root, id);
-  await fs.mkdir(directory, { mode: 0o700 });
-  const timestamp = new Date().toISOString();
-  const files: string[] = [];
-
-  try {
-    for (const entry of generated.files) {
-      const relative = validateRelativeProjectPath(entry.path);
-      const file = await safeFile(directory, relative);
-      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-      await fs.writeFile(file, entry.content, { flag: 'wx', mode: 0o600 });
-      files.push(relative);
-    }
-    const record: ProjectRecord = {
-      id,
-      ownerId,
-      name: generated.name,
-      specification: generated.specification,
-      technology: generated.technology,
-      tasks: generated.tasks,
-      files,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      latestDiff: generated.files.map((file) => ({
-        path: file.path,
-        added: file.content.split('\n').length,
-        removed: 0,
-        patch: unifiedDiff(file.path, '', file.content),
-      })),
-      logs: [{ message: 'Generated source files in a new isolated project workspace.', timestamp }],
-      checks: [],
-      previewStatus: 'not_started',
-      deploymentDraft: {
-        status: 'draft',
-        target: null,
-        buildCommand: 'npm run build',
-        automaticDeployment: false,
-        requiresManualApproval: true,
-      },
-      repairAttempts: 0,
-    };
-    await writeRecord(directory, record);
-    return record;
-  } catch (error) {
-    await fs.rm(directory, { recursive: true, force: true });
-    throw error;
-  }
-}
-
-export async function listProjects(ownerId: string): Promise<ProjectRecord[]> {
-  const root = await ensureRoot();
-  const entries = await fs.readdir(root, { withFileTypes: true });
-  const projects: ProjectRecord[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory() || !/^[0-9a-f-]{36}$/i.test(entry.name)) continue;
-    try {
-      const project = await readRecord(projectDirectory(root, entry.name));
-      if (project.ownerId === ownerId) projects.push(project);
-    } catch {
-      continue;
-    }
-  }
-  return projects.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 50);
-}
-
-export async function getProject(id: string): Promise<ProjectRecord | undefined> {
-  try {
-    const root = await ensureRoot();
-    const directory = projectDirectory(root, id);
-    const resolved = await fs.realpath(directory);
-    if (!resolved.startsWith(`${root}${path.sep}`)) return undefined;
-    const record = await readRecord(resolved);
-    return record.id === id ? record : undefined;
+    const task = JSON.parse(row.record_json) as ProjectTask;
+    return task.id === id && task.ownerId === ownerId ? task : undefined;
   } catch {
     return undefined;
   }
 }
 
+export const getProjectTaskForOwner = getProjectTask;
+
+export async function countRunningChecks(ownerId: string): Promise<number> {
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const row = await TINAN_DB.prepare(
+    "SELECT COUNT(*) AS count FROM project_tasks WHERE owner_id = ? AND kind = 'check' AND status = 'generating'",
+  ).bind(ownerId).first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
+export async function acquireProjectLock(id: string, ownerId: string): Promise<string | null> {
+  if (!await getProjectForOwner(id, ownerId)) return null;
+  const token = randomUUID();
+  const now = Date.now();
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    'INSERT INTO project_locks (project_id, owner_id, token, lease_until) VALUES (?, ?, ?, ?) ' +
+    'ON CONFLICT(project_id) DO UPDATE SET owner_id = excluded.owner_id, token = excluded.token, lease_until = excluded.lease_until ' +
+    'WHERE project_locks.lease_until <= ?',
+  ).bind(id, ownerId, token, now + 10 * 60 * 1000, now).run();
+  return result.meta?.changes ? token : null;
+}
+
+export async function releaseProjectLock(id: string, ownerId: string, token: string): Promise<void> {
+  const { TINAN_DB } = await getProjectStorageBindings();
+  await TINAN_DB.prepare(
+    'DELETE FROM project_locks WHERE project_id = ? AND owner_id = ? AND token = ?',
+  ).bind(id, ownerId, token).run();
+}
+
+export async function reserveProjectRepair(id: string, ownerId: string): Promise<ProjectRecord> {
+  const record = await getProjectForOwner(id, ownerId);
+  if (!record) throw new Error('Project not found.');
+  if (record.repairAttempts >= 1) throw new Error('The single bounded AI repair attempt has already been used.');
+  if (record.checks[0]?.status !== 'failed') throw new Error('Run a failed sandbox check before requesting a repair.');
+  const timestamp = new Date().toISOString();
+  record.repairAttempts += 1;
+  record.logs.unshift({ message: 'User authorized the project’s single bounded AI repair attempt.', timestamp });
+  record.logs = record.logs.slice(0, 30);
+  record.updatedAt = timestamp;
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const update = await TINAN_DB.prepare(
+    'UPDATE projects SET record_json = ?, repair_attempts = ?, updated_at = ? ' +
+    "WHERE id = ? AND owner_id = ? AND repair_attempts = 0 AND latest_check_status = 'failed'",
+  ).bind(JSON.stringify(record), record.repairAttempts, timestamp, id, ownerId).run();
+  if (!update.meta?.changes) throw new Error('The single bounded AI repair attempt has already been used.');
+  return record;
+}
+
+export function getProjectTaskSignal(id: string): AbortSignal | undefined {
+  return runtime().controllers.get(id)?.signal;
+}
+
+export async function updateProjectTask(
+  task: ProjectTask,
+  status: ProjectTask['status'],
+  message: string,
+): Promise<void> {
+  const stored = await getProjectTask(task.id, task.ownerId);
+  if (!stored || stored.status !== 'generating') {
+    if (stored) Object.assign(task, stored);
+    return;
+  }
+  const next: ProjectTask = {
+    ...stored,
+    projectId: task.projectId,
+    status,
+    progress: stored.progress.concat(message),
+    errors: status === 'failed' ? stored.errors.concat(message) : stored.errors,
+    updatedAt: new Date().toISOString(),
+  };
+  const { TINAN_DB } = await getProjectStorageBindings();
+  await TINAN_DB.prepare(
+    "UPDATE project_tasks SET project_id = ?, record_json = ?, status = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
+  ).bind(next.projectId, JSON.stringify(next), status, next.updatedAt, task.id, task.ownerId).run();
+  Object.assign(task, next);
+  if (status !== 'generating') runtime().controllers.delete(task.id);
+}
+
+export async function cancelProjectTask(id: string, ownerId: string): Promise<ProjectTask | undefined> {
+  const task = await getProjectTask(id, ownerId);
+  if (!task) return undefined;
+  if (task.status === 'generating') {
+    runtime().controllers.get(id)?.abort();
+    await updateProjectTask(task, 'cancelled', 'Generation cancelled by the user.');
+    return getProjectTask(id, ownerId);
+  }
+  return task;
+}
+
+export async function createProject(generated: GeneratedProject, ownerId: string): Promise<ProjectRecord> {
+  const files = validateFiles(generated.files);
+  const { TINAN_DB, TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const count = await TINAN_DB.prepare(
+    'SELECT COUNT(*) AS count FROM projects WHERE owner_id = ?',
+  ).bind(ownerId).first<{ count: number }>();
+  if (Number(count?.count ?? 0) >= 100) throw new Error('Project storage limit reached (100 projects).');
+  const id = randomUUID();
+  const timestamp = new Date().toISOString();
+  const record: ProjectRecord = {
+    id,
+    ownerId,
+    name: generated.name,
+    specification: generated.specification,
+    technology: generated.technology,
+    tasks: generated.tasks,
+    files: files.map((file) => file.path),
+    createdAt: timestamp,
+    updatedAt: timestamp,
+    latestDiff: files.map((file) => ({
+      path: file.path,
+      added: file.content.split('\n').length,
+      removed: 0,
+      patch: unifiedDiff(file.path, '', file.content),
+    })),
+    logs: [{ message: 'Generated source files in a durable isolated project workspace.', timestamp }],
+    checks: [],
+    previewStatus: 'not_started',
+    deploymentDraft: {
+      status: 'draft',
+      target: null,
+      buildCommand: 'npm run build',
+      automaticDeployment: false,
+      requiresManualApproval: true,
+    },
+    repairAttempts: 0,
+  };
+  const written: string[] = [];
+  try {
+    for (const file of files) {
+      const key = metadataKey(ownerId, id, file.path);
+      await TINAN_PROJECT_FILES.put(key, file.content);
+      written.push(key);
+    }
+    await TINAN_DB.prepare(
+      'INSERT INTO projects (id, owner_id, record_json, repair_attempts, latest_check_status, rollback_snapshot_id, updated_at) VALUES (?, ?, ?, 0, NULL, NULL, ?)',
+    ).bind(id, ownerId, JSON.stringify(record), timestamp).run();
+    return record;
+  } catch (error) {
+    if (written.length) await TINAN_PROJECT_FILES.delete(written);
+    throw error;
+  }
+}
+
+export async function listProjects(ownerId: string): Promise<ProjectRecord[]> {
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    'SELECT record_json FROM projects WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 50',
+  ).bind(ownerId).all<ProjectRow>();
+  return (result.results ?? []).flatMap((row) => {
+    try {
+      const record = JSON.parse(row.record_json) as ProjectRecord;
+      return record.ownerId === ownerId ? [record] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export async function getProject(id: string, ownerId: string): Promise<ProjectRecord | undefined> {
+  return readRecord(id, ownerId);
+}
+
 export async function getProjectForOwner(id: string, ownerId: string): Promise<ProjectRecord | undefined> {
-  const project = await getProject(id);
-  return project?.ownerId === ownerId ? project : undefined;
+  return readRecord(id, ownerId);
 }
 
-export async function readProjectFile(id: string, relative: string): Promise<string> {
-  const root = await ensureRoot();
-  const record = await getProject(id);
-  if (!record || !record.files.includes(validateRelativeProjectPath(relative))) throw new Error('Project file not found.');
-  const file = await safeFile(projectDirectory(root, id), relative);
-  const stat = await fs.stat(file);
-  if (!stat.isFile() || stat.size > 128 * 1024) throw new Error('Project file exceeds the read limit.');
-  return fs.readFile(file, 'utf8');
+export async function readProjectFile(id: string, relative: string, ownerId: string): Promise<string> {
+  const safePath = validateRelativeProjectPath(relative);
+  const record = await getProjectForOwner(id, ownerId);
+  if (!record || !record.files.includes(safePath)) throw new Error('Project file not found.');
+  const { TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const object = await TINAN_PROJECT_FILES.get(metadataKey(ownerId, id, safePath));
+  if (!object) throw new Error('Project file not found.');
+  const content = await object.text();
+  if (Buffer.byteLength(content, 'utf8') > 128 * 1024) throw new Error('Project file exceeds the read limit.');
+  return content;
 }
 
-export async function exportProjectFiles(id: string): Promise<{ name: string; files: { path: string; content: Buffer }[] }> {
-  const record = await getProject(id);
+export async function exportProjectFiles(
+  id: string,
+  ownerId: string,
+): Promise<{ name: string; files: { path: string; content: Buffer }[] }> {
+  const record = await getProjectForOwner(id, ownerId);
   if (!record) throw new Error('Project not found.');
   const files = await Promise.all(record.files.map(async (relative) => ({
     path: relative,
-    content: Buffer.from(await readProjectFile(id, relative), 'utf8'),
+    content: Buffer.from(await readProjectFile(id, relative, ownerId), 'utf8'),
   })));
   files.push({
     path: 'deployment.config.json',
@@ -363,143 +356,182 @@ export async function exportProjectFiles(id: string): Promise<{ name: string; fi
   return { name: record.name, files };
 }
 
-export async function recordProjectLog(id: string, message: string): Promise<void> {
-  const root = await ensureRoot();
-  const directory = projectDirectory(root, id);
-  const record = await getProject(id);
+export async function recordProjectLog(id: string, ownerId: string, message: string): Promise<void> {
+  const record = await getProjectForOwner(id, ownerId);
   if (!record) throw new Error('Project not found.');
   const timestamp = new Date().toISOString();
   record.logs.unshift({ message: message.slice(0, 500), timestamp });
   record.logs = record.logs.slice(0, 50);
   record.updatedAt = timestamp;
-  await writeRecord(directory, record);
+  await saveRecord(record);
 }
 
-export async function snapshotProject(id: string): Promise<void> {
-  const record = await getProject(id);
-  if (!record) throw new Error('Project not found.');
-  const backup = new Map<string, string>();
-  for (const relative of record.files) backup.set(relative, await readProjectFile(id, relative));
-  state().backups.set(id, backup);
-}
-
-export async function rollbackProject(id: string): Promise<ProjectRecord> {
-  const backup = state().backups.get(id);
-  if (!backup) throw new Error('No rollback snapshot is available for this project process.');
-  const root = await ensureRoot();
-  const directory = projectDirectory(root, id);
-  const record = await getProject(id);
-  if (!record) throw new Error('Project not found.');
-  for (const relative of record.files) {
-    const file = await safeFile(directory, relative);
-    await fs.rm(file, { force: true });
+async function createSnapshot(record: ProjectRecord): Promise<string> {
+  const { TINAN_DB, TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const snapshotId = randomUUID();
+  const saved: string[] = [];
+  try {
+    for (const relative of record.files) {
+      const content = await readProjectFile(record.id, relative, record.ownerId);
+      const key = snapshotKey(record.ownerId, record.id, snapshotId, relative);
+      await TINAN_PROJECT_FILES.put(key, content);
+      saved.push(key);
+    }
+    await TINAN_DB.prepare(
+      'INSERT INTO project_backups (project_id, owner_id, snapshot_id, files_json, created_at) VALUES (?, ?, ?, ?, ?)',
+    ).bind(record.id, record.ownerId, snapshotId, JSON.stringify(record.files), new Date().toISOString()).run();
+    return snapshotId;
+  } catch (error) {
+    if (saved.length) await TINAN_PROJECT_FILES.delete(saved);
+    throw error;
   }
-  const files: string[] = [];
-  for (const [relative, content] of Array.from(backup.entries())) {
-    const file = await safeFile(directory, relative);
-    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-    await fs.writeFile(file, content, { flag: 'wx', mode: 0o600 });
-    files.push(relative);
+}
+
+export async function snapshotProject(id: string, ownerId: string): Promise<void> {
+  const record = await getProjectForOwner(id, ownerId);
+  if (!record) throw new Error('Project not found.');
+  const snapshotId = await createSnapshot(record);
+  const { TINAN_DB } = await getProjectStorageBindings();
+  await TINAN_DB.prepare(
+    'UPDATE projects SET rollback_snapshot_id = ? WHERE id = ? AND owner_id = ?',
+  ).bind(snapshotId, id, ownerId).run();
+}
+
+export async function rollbackProject(id: string, ownerId: string): Promise<ProjectRecord> {
+  const record = await getProjectForOwner(id, ownerId);
+  if (!record) throw new Error('Project not found.');
+  const { TINAN_DB, TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const projectRow = await TINAN_DB.prepare(
+    'SELECT rollback_snapshot_id FROM projects WHERE id = ? AND owner_id = ?',
+  ).bind(id, ownerId).first<{ rollback_snapshot_id: string | null }>();
+  const snapshotId = projectRow?.rollback_snapshot_id;
+  if (!snapshotId) throw new Error('No rollback snapshot is available for this project.');
+  const backup = await TINAN_DB.prepare(
+    'SELECT files_json FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
+  ).bind(id, ownerId, snapshotId).first<BackupRow>();
+  if (!backup) throw new Error('Rollback snapshot not found.');
+  let files: string[];
+  try {
+    files = (JSON.parse(backup.files_json) as unknown[]).map((entry) => {
+      if (typeof entry !== 'string') throw new Error('Invalid backup file list.');
+      return validateRelativeProjectPath(entry);
+    });
+  } catch {
+    throw new Error('Rollback snapshot is invalid.');
+  }
+  const restored = new Map<string, string>();
+  for (const relative of files) {
+    const object = await TINAN_PROJECT_FILES.get(snapshotKey(ownerId, id, snapshotId, relative));
+    if (!object) throw new Error('Rollback snapshot file is missing.');
+    restored.set(relative, await object.text());
+  }
+  for (const relative of record.files) {
+    if (!restored.has(relative)) await TINAN_PROJECT_FILES.delete(metadataKey(ownerId, id, relative));
+  }
+  for (const [relative, content] of restored) {
+    await TINAN_PROJECT_FILES.put(metadataKey(ownerId, id, relative), content);
   }
   record.files = files;
   record.updatedAt = new Date().toISOString();
-  record.logs.push({ message: 'Rolled back to the last in-process project snapshot.', timestamp: record.updatedAt });
+  record.logs.push({ message: 'Rolled back to the last durable project snapshot.', timestamp: record.updatedAt });
   record.latestDiff = [];
-  await writeRecord(directory, record);
-  state().backups.delete(id);
+  await TINAN_DB.prepare(
+    'UPDATE projects SET record_json = ?, rollback_snapshot_id = NULL, updated_at = ? WHERE id = ? AND owner_id = ?',
+  ).bind(JSON.stringify(record), record.updatedAt, id, ownerId).run();
+  await TINAN_DB.prepare(
+    'DELETE FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
+  ).bind(id, ownerId, snapshotId).run();
+  await TINAN_PROJECT_FILES.delete(files.map((relative) => snapshotKey(ownerId, id, snapshotId, relative)));
   return record;
 }
 
-export async function writeGeneratedFiles(id: string, generated: GeneratedProject): Promise<ProjectRecord> {
-  const root = await ensureRoot();
-  const directory = projectDirectory(root, id);
-  const record = await getProject(id);
+export async function writeGeneratedFiles(
+  id: string,
+  generated: GeneratedProject,
+  ownerId: string,
+): Promise<ProjectRecord> {
+  const files = validateFiles(generated.files);
+  const record = await getProjectForOwner(id, ownerId);
   if (!record) throw new Error('Project not found.');
-  const previous = new Map(record.files.map((file) => [file, '']));
-  for (const relative of record.files) previous.set(relative, await readProjectFile(id, relative));
-  state().backups.set(id, previous);
-  const diffs: ProjectRecord['latestDiff'] = [];
-  const addedPaths: string[] = [];
-
+  const { TINAN_DB, TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const previous = new Map<string, string>();
+  for (const relative of record.files) previous.set(relative, await readProjectFile(id, relative, ownerId));
+  const resultingFiles = Array.from(new Set(record.files.concat(files.map((file) => file.path))));
+  const resultingBytes = resultingFiles.reduce((sum, relative) => {
+    const update = files.find((file) => file.path === relative);
+    return sum + Buffer.byteLength(update?.content ?? previous.get(relative) ?? '', 'utf8');
+  }, 0);
+  if (resultingFiles.length > 24 || resultingBytes > 256 * 1024) {
+    throw new Error('Project workspace limit reached (24 files or 256 KiB of source).');
+  }
+  const snapshotId = await createSnapshot(record);
+  const saved: string[] = [];
   try {
-    for (const entry of generated.files) {
-      const relative = validateRelativeProjectPath(entry.path);
-      const file = await safeFile(directory, relative);
-      const existed = record.files.includes(relative);
-      const oldContent = existed ? previous.get(relative) ?? '' : '';
-      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-      await fs.writeFile(file, entry.content, { mode: 0o600, flag: existed ? 'w' : 'wx' });
-      if (!existed) addedPaths.push(relative);
+    for (const file of files) {
+      const key = metadataKey(ownerId, id, file.path);
+      await TINAN_PROJECT_FILES.put(key, file.content);
+      saved.push(file.path);
+    }
+    const diffs = files.map((file) => {
+      const oldContent = previous.get(file.path) ?? '';
       const oldLines = oldContent.split('\n');
-      const newLines = entry.content.split('\n');
-      diffs.push({
-        path: relative,
+      const newLines = file.content.split('\n');
+      return {
+        path: file.path,
         added: newLines.filter((line) => !oldLines.includes(line)).length,
         removed: oldLines.filter((line) => !newLines.includes(line)).length,
-        patch: unifiedDiff(relative, oldContent, entry.content),
-      });
-    }
-    const resultingFiles = new Set(record.files.concat(
-      generated.files.map((entry) => validateRelativeProjectPath(entry.path)),
-    ));
-    const resultingBytes = Array.from(resultingFiles).reduce((sum, file) => {
-      const next = generated.files.find((entry) => entry.path === file);
-      return sum + Buffer.byteLength(next?.content ?? previous.get(file) ?? '', 'utf8');
-    }, 0);
-    if (resultingFiles.size > 24 || resultingBytes > 256 * 1024) {
-      throw new Error('Project workspace limit reached (24 files or 256 KiB of source).');
-    }
-
-    record.files = Array.from(new Set(record.files.concat(
-      generated.files.map((entry) => validateRelativeProjectPath(entry.path)),
-    )));
+        patch: unifiedDiff(file.path, oldContent, file.content),
+      };
+    });
+    record.files = resultingFiles;
     record.specification = generated.specification;
     record.technology = generated.technology;
     record.tasks = generated.tasks;
     record.updatedAt = new Date().toISOString();
     record.latestDiff = diffs;
-    record.logs.push({ message: `Generated ${generated.files.length} file update(s); rollback snapshot saved.`, timestamp: record.updatedAt });
-    await writeRecord(directory, record);
+    record.logs.push({ message: `Generated ${files.length} file update(s); durable rollback snapshot saved.`, timestamp: record.updatedAt });
+    const result = await TINAN_DB.prepare(
+      'UPDATE projects SET record_json = ?, rollback_snapshot_id = ?, updated_at = ? WHERE id = ? AND owner_id = ?',
+    ).bind(JSON.stringify(record), snapshotId, record.updatedAt, id, ownerId).run();
+    if (!result.meta?.changes) throw new Error('Project not found.');
     return record;
   } catch (error) {
-    for (const relative of addedPaths) {
-      const file = await safeFile(directory, relative);
-      await fs.rm(file, { force: true });
+    for (const relative of saved) {
+      if (previous.has(relative)) {
+        await TINAN_PROJECT_FILES.put(metadataKey(ownerId, id, relative), previous.get(relative) ?? '');
+      } else {
+        await TINAN_PROJECT_FILES.delete(metadataKey(ownerId, id, relative));
+      }
     }
-    for (const [relative, content] of Array.from(previous.entries())) {
-      const file = await safeFile(directory, relative);
-      await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-      await fs.writeFile(file, content, { mode: 0o600 });
-    }
+    await TINAN_DB.prepare(
+      'DELETE FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
+    ).bind(id, ownerId, snapshotId).run();
+    await TINAN_PROJECT_FILES.delete(record.files.map((relative) => snapshotKey(ownerId, id, snapshotId, relative)));
     throw error;
   }
 }
 
 export async function recordProjectCheck(
   id: string,
+  ownerId: string,
   check: string,
   status: 'passed' | 'failed' | 'unavailable' | 'cancelled',
   output: string,
 ): Promise<void> {
-  const root = await ensureRoot();
-  const directory = projectDirectory(root, id);
-  const record = await getProject(id);
+  const record = await getProjectForOwner(id, ownerId);
   if (!record) throw new Error('Project not found.');
+  const timestamp = new Date().toISOString();
   record.checks ??= [];
-  record.checks.unshift({
-    check,
-    status,
-    output: output.slice(0, 12000),
-    timestamp: new Date().toISOString(),
-  });
+  record.checks.unshift({ check, status, output: output.slice(0, 12000), timestamp });
   record.checks = record.checks.slice(0, 10);
-  record.logs.unshift({
-    message: `${check} sandbox check: ${status}.`,
-    timestamp: new Date().toISOString(),
-  });
+  record.logs.unshift({ message: `${check} sandbox check: ${status}.`, timestamp });
   record.logs = record.logs.slice(0, 30);
-  record.updatedAt = new Date().toISOString();
-  await writeRecord(directory, record);
+  record.updatedAt = timestamp;
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    'UPDATE projects SET record_json = ?, latest_check_status = ?, updated_at = ? WHERE id = ? AND owner_id = ?',
+  ).bind(JSON.stringify(record), status, timestamp, id, ownerId).run();
+  if (!result.meta?.changes) throw new Error('Project not found.');
 }
 
 function unifiedDiff(filePath: string, oldContent: string, newContent: string): string {
@@ -510,7 +542,6 @@ function unifiedDiff(filePath: string, oldContent: string, newContent: string): 
   let suffix = 0;
   while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix &&
     oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
-
   const contextStart = Math.max(0, prefix - 2);
   const contextEndOld = Math.min(oldLines.length, oldLines.length - suffix + 2);
   const contextEndNew = Math.min(newLines.length, newLines.length - suffix + 2);

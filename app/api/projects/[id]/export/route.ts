@@ -13,7 +13,7 @@ export async function GET(request: Request, context: Context) {
     if (!await getProjectForOwner(id, ownerId)) {
       return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
     }
-    const project = await exportProjectFiles(id);
+    const project = await exportProjectFiles(id, ownerId);
     const archive = createProjectArchive(project.files);
     const safeName = project.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || 'project';
     return new Response(archive, {

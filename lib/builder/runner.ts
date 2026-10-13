@@ -1,5 +1,5 @@
 import { generateProject, getOpenAICompatibleConfig, getProviderMode, ProviderError } from '../agent/openai-provider';
-import { acquireProjectLock, createProject, getProject, getProjectTaskSignal, recordProjectCheck, releaseProjectLock, releaseProjectRepair, updateProjectTask, writeGeneratedFiles } from './project-store';
+import { acquireProjectLock, createProject, getProject, getProjectTaskSignal, recordProjectCheck, releaseProjectLock, updateProjectTask, writeGeneratedFiles } from './project-store';
 import { runSandboxCheck } from './sandbox';
 import type { ProjectTask } from './project-store';
 
@@ -7,8 +7,9 @@ export async function runProjectGeneration(
   task: ProjectTask,
   generator: typeof generateProject = generateProject,
 ): Promise<void> {
-  if (task.projectId && !acquireProjectLock(task.projectId)) {
-    updateProjectTask(task.id, 'failed', 'Another generation is already updating this project.');
+  const lock = task.projectId ? await acquireProjectLock(task.projectId, task.ownerId) : null;
+  if (task.projectId && !lock) {
+    await updateProjectTask(task, 'failed', 'Another generation is already updating this project.');
     return;
   }
   const signal = getProjectTaskSignal(task.id);
@@ -20,38 +21,37 @@ export async function runProjectGeneration(
     const generated = await generator(task.requirements, signal);
     if (signal?.aborted || task.status === 'cancelled') return;
     const project = task.projectId
-      ? await writeGeneratedFiles(task.projectId, generated)
+      ? await writeGeneratedFiles(task.projectId, generated, task.ownerId)
       : await createProject(generated, task.ownerId);
     task.projectId = project.id;
-    updateProjectTask(task.id, 'completed', `Generated ${project.files.length} files for ${project.name}.`);
+    await updateProjectTask(task, 'completed', `Generated ${project.files.length} files for ${project.name}.`);
   } catch (error) {
     if (task.status === 'cancelled') return;
     const message = error instanceof Error ? error.message : 'Project generation failed.';
-    updateProjectTask(task.id, 'failed', message.slice(0, 500));
+    await updateProjectTask(task, 'failed', message.slice(0, 500));
   } finally {
-    if (task.projectId) releaseProjectLock(task.projectId);
-    if (task.kind === 'repair' && task.projectId) releaseProjectRepair(task.projectId);
+    if (task.projectId && lock) await releaseProjectLock(task.projectId, task.ownerId, lock);
   }
 }
 
 export async function runProjectCheck(task: ProjectTask): Promise<void> {
   const signal = getProjectTaskSignal(task.id);
-  if (task.projectId && !acquireProjectLock(task.projectId)) {
-    updateProjectTask(task.id, 'failed', 'Another project task is currently using this workspace.');
+  const lock = task.projectId ? await acquireProjectLock(task.projectId, task.ownerId) : null;
+  if (task.projectId && !lock) {
+    await updateProjectTask(task, 'failed', 'Another project task is currently using this workspace.');
     return;
   }
   try {
-    if (!task.projectId || !task.check || !await getProject(task.projectId)) {
+    if (!task.projectId || !task.check || !await getProject(task.projectId, task.ownerId)) {
       throw new Error('Project or sandbox check was not found.');
     }
-    updateProjectTask(task.id, 'generating', `Starting isolated ${task.check} sandbox check.`);
-    const result = await runSandboxCheck(task.projectId, task, task.check, signal ?? new AbortController().signal);
-    await recordProjectCheck(task.projectId, task.check, result.status, result.output);
-    updateProjectTask(task.id, result.status === 'unavailable' ? 'failed' : result.status === 'cancelled' ? 'cancelled' : 'completed',
+    const result = await runSandboxCheck(task.projectId, task.ownerId, task, task.check, signal ?? new AbortController().signal);
+    await recordProjectCheck(task.projectId, task.ownerId, task.check, result.status, result.output);
+    await updateProjectTask(task, result.status === 'unavailable' ? 'failed' : result.status === 'cancelled' ? 'cancelled' : 'completed',
       `${task.check} sandbox check ${result.status}: ${result.output}`);
   } catch (error) {
-    updateProjectTask(task.id, 'failed', error instanceof Error ? error.message : 'Sandbox check failed.');
+    await updateProjectTask(task, 'failed', error instanceof Error ? error.message : 'Sandbox check failed.');
   } finally {
-    if (task.projectId) releaseProjectLock(task.projectId);
+    if (task.projectId && lock) await releaseProjectLock(task.projectId, task.ownerId, lock);
   }
 }

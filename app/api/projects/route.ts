@@ -11,7 +11,7 @@ const maxBodyBytes = 16 * 1024;
 export async function GET(request: Request) {
   const ownerId = getRequestOwnerId(request);
   if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
-  return NextResponse.json({ projects: await listProjects(ownerId), persistence: 'local-filesystem' });
+  return NextResponse.json({ projects: await listProjects(ownerId), persistence: 'cloudflare-d1-r2' });
 }
 
 export async function POST(request: Request) {
@@ -52,9 +52,9 @@ export async function POST(request: Request) {
   if ('projectId' in body && !(await getProjectForOwner(body.projectId as string, ownerId))) {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   }
-  const task = createProjectTask(requirements, ownerId, 'generation', 'projectId' in body ? body.projectId as string : null);
+  const task = await createProjectTask(requirements, ownerId, 'generation', 'projectId' in body ? body.projectId as string : null);
   after(() => runProjectGeneration(task));
-  return NextResponse.json({ task, persistence: 'local-filesystem' }, { status: 202 });
+  return NextResponse.json({ task, persistence: 'cloudflare-d1-r2' }, { status: 202 });
 }
 
 async function readBoundedJson(request: Request): Promise<unknown> {
