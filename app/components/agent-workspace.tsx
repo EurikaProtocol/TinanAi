@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { FormEvent, useState } from 'react';
 
 type PlanStep = {
@@ -104,10 +105,10 @@ export default function AgentWorkspace() {
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="TINAN AI home">
+        <Link className="brand" href="/" aria-label="TINAN AI home">
           <span className="brand-mark">T</span>
           <span className="brand-copy"><strong>TINAN</strong><small>Natural Intelligence</small></span>
-        </a>
+        </Link>
 
         <div className="workspace-label">WORKSPACE</div>
         <nav className="primary-nav" aria-label="Main navigation">
