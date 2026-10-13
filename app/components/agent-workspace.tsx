@@ -54,7 +54,7 @@ export default function AgentWorkspace() {
   const [input, setInput] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [provider, setProvider] = useState<'demo' | 'openai-compatible'>('demo');
+  const [provider, setProvider] = useState<'demo' | 'openai-compatible' | 'unconfigured'>('unconfigured');
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [conversation, setConversation] = useState<ConversationEntry[]>([
     {
@@ -94,10 +94,11 @@ export default function AgentWorkspace() {
     fetch('/api/agent/tasks')
       .then(async (response) => response.ok ? response.json() : null)
       .then((payload) => {
-        if (payload?.providerConfigured && (payload.provider === 'openai-compatible' || payload.provider === 'demo')) {
-          setProvider(payload.provider);
-        } else if (payload?.provider === 'openai-compatible' && !payload.providerConfigured) {
+        if (payload?.provider === 'openai-compatible' && !payload.providerConfigured) {
+          setProvider('unconfigured');
           setError('OpenAI-compatible provider is selected but server credentials/model are incomplete.');
+        } else if (payload?.provider === 'openai-compatible' || payload?.provider === 'demo') {
+          setProvider(payload.provider);
         }
       })
       .catch(() => setError('Could not read server provider status.'));
@@ -211,7 +212,7 @@ export default function AgentWorkspace() {
         <header className="topbar">
           <div className="breadcrumbs"><span>Workspace</span><span className="crumb-divider">/</span><strong>{view === 'dashboard' ? 'Overview' : 'AI workspace'}</strong></div>
           <div className="topbar-actions">
-            <span className="provider-pill"><span className="status-dot" />{provider === 'demo' ? 'Demo · simulated' : 'OpenAI-compatible'}</span>
+            <span className="provider-pill"><span className="status-dot" />{providerLabel(provider)}</span>
             <button className="help-button" type="button" title="Help and documentation are planned" disabled>?</button>
           </div>
         </header>
@@ -240,8 +241,8 @@ export default function AgentWorkspace() {
               </article>
               <article className="stat-card">
                 <div className="stat-top"><span>CONNECTED PROVIDERS</span><span className="stat-icon">⌘</span></div>
-                <strong>01</strong>
-                <small>{provider === 'demo' ? 'Demo · simulated responses' : 'Server-side provider configured'}</small>
+                <strong>{provider === 'unconfigured' ? '00' : '01'}</strong>
+                <small>{provider === 'demo' ? 'Demo · simulated responses' : provider === 'unconfigured' ? 'Provider setup required' : 'Server-side provider configured'}</small>
               </article>
             </section>
           )}
@@ -250,7 +251,7 @@ export default function AgentWorkspace() {
             <section className="chat-panel" aria-label="Agent planning workspace">
               <div className="panel-heading">
                 <div className="agent-identity"><span className="agent-orb">✳</span><span><strong>TINAN Agent</strong><small><span className="status-dot" /> Ready to plan</small></span></div>
-                <div className="model-chip"><span className="model-icon">✧</span>{provider === 'demo' ? 'Demo planner' : 'Configured provider'} <span className="chevron">⌄</span></div>
+                <div className="model-chip"><span className="model-icon">✧</span>{provider === 'demo' ? 'Demo planner' : provider === 'unconfigured' ? 'Provider unavailable' : 'Configured provider'} <span className="chevron">⌄</span></div>
               </div>
 
               <div className="conversation" aria-live="polite" aria-relevant="additions">
@@ -258,14 +259,14 @@ export default function AgentWorkspace() {
                   <article className={`message ${entry.role}`} key={entry.id}>
                     {entry.role === 'assistant' && <span className="message-avatar">✳</span>}
                     <div className="message-body">
-                      <div className="message-meta">{entry.role === 'assistant' ? 'TINAN' : 'YOU'} <span>·</span> {entry.role === 'assistant' ? provider === 'demo' ? 'DEMO PLANNER' : 'AI PROVIDER' : 'JUST NOW'}</div>
+                      <div className="message-meta">{entry.role === 'assistant' ? 'TINAN' : 'YOU'} <span>·</span> {entry.role === 'assistant' ? provider === 'demo' ? 'DEMO PLANNER' : provider === 'unconfigured' ? 'PROVIDER UNAVAILABLE' : 'AI PROVIDER' : 'JUST NOW'}</div>
                       <p>{entry.content}</p>
                       {entry.task && <TaskPlanCard task={entry.task} onRespond={respondToTask} />}
                     </div>
                   </article>
                 ))}
                 {isSubmitting && (
-                  <div className="thinking-state" role="status"><span className="thinking-dots"><i /><i /><i /></span>{provider === 'demo' ? 'Preparing simulated plan…' : 'Planning and checking permitted tools…'}</div>
+                  <div className="thinking-state" role="status"><span className="thinking-dots"><i /><i /><i /></span>{provider === 'demo' ? 'Preparing simulated plan…' : provider === 'unconfigured' ? 'Checking provider configuration…' : 'Planning and checking permitted tools…'}</div>
                 )}
               </div>
 
@@ -288,7 +289,7 @@ export default function AgentWorkspace() {
                   value={input}
                 />
                 <div className="composer-footer">
-                  <span>{provider === 'demo' ? 'Demo plans are simulated; no tools run.' : 'Only registered, permission-checked safe tools may run.'}</span>
+                  <span>{provider === 'demo' ? 'Demo plans are simulated; no tools run.' : provider === 'unconfigured' ? 'Configure a server-side provider before planning.' : 'Only registered, permission-checked safe tools may run.'}</span>
                   <button className="send-button" disabled={!input.trim() || isSubmitting} type="submit">
                     {isSubmitting ? 'Planning…' : 'Create plan'} <span aria-hidden="true">↑</span>
                   </button>
@@ -349,8 +350,8 @@ function TaskPlanCard({ task, onRespond }: {
       </ol>
       {task.approvalRequired && task.status === 'awaiting_approval' && (
         <div className="approval-actions">
-          <div className="approval-notice"><span>!</span> Explicit approval required before safe-tool execution.</div>
-          <button type="button" onClick={() => onRespond(task.id, 'approval', true)}>Approve safe tools</button>
+          <div className="approval-notice"><span>!</span> Explicit approval required before proceeding.</div>
+          <button type="button" onClick={() => onRespond(task.id, 'approval', true)}>{task.simulated ? 'Approve simulated plan' : 'Approve safe tools'}</button>
           <button type="button" onClick={() => onRespond(task.id, 'approval', false)}>Decline</button>
         </div>
       )}
@@ -366,4 +367,10 @@ function TaskPlanCard({ task, onRespond }: {
       <div className="simulation-note"><span>ⓘ</span> {task.simulated ? 'Simulated plan · No tools run · No files changed' : 'Model-generated plan · Registered safe tools only · No shell or file writes'}</div>
     </section>
   );
+}
+
+function providerLabel(provider: 'demo' | 'openai-compatible' | 'unconfigured'): string {
+  if (provider === 'demo') return 'Demo · simulated';
+  if (provider === 'openai-compatible') return 'OpenAI-compatible';
+  return 'Provider setup required';
 }

@@ -33,9 +33,13 @@ export async function POST(request: Request) {
 
   let body: unknown;
   try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
+    body = await readBoundedJson(request);
+  } catch (error) {
+    const tooLarge = error instanceof Error && error.message === 'body-too-large';
+    return NextResponse.json(
+      { error: tooLarge ? 'Request body is too large.' : 'Request body must be valid JSON.' },
+      { status: tooLarge ? 413 : 400 },
+    );
   }
   if (typeof body !== 'object' || body === null ||
       !('objective' in body) || typeof body.objective !== 'string') {
@@ -60,7 +64,7 @@ export async function POST(request: Request) {
   }
 
   const requestedPaths = 'authorizedPaths' in body && Array.isArray(body.authorizedPaths)
-    ? body.authorizedPaths.filter((value): value is string => typeof value === 'string').slice(0, 8)
+    ? body.authorizedPaths.filter((value): value is string => typeof value === 'string' && value.length <= 300).slice(0, 8)
     : [];
   const authorizedPaths = process.env.TINAN_ENABLE_FILE_READING === 'true' ? requestedPaths : [];
   const task = createTaskRecord(randomUUID(), objective, provider, authorizedPaths);
@@ -71,4 +75,28 @@ export async function POST(request: Request) {
     { provider, simulated: provider === 'demo', task, persistence: 'process-memory' },
     { status: 202 },
   );
+}
+
+async function readBoundedJson(request: Request): Promise<unknown> {
+  if (!request.body) throw new Error('invalid-json');
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new Error('body-too-large');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
