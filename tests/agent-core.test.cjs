@@ -3,22 +3,42 @@ const { mkdtemp, rm, symlink, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createDemoPlan, createTaskRecord, planTask } = require('../.test-build/engine.js');
+const { createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
 const {
   createModelPlan,
   getOpenAICompatibleConfig,
   getProviderMode,
   ProviderError,
   validatePlan,
-} = require('../.test-build/openai-provider.js');
-const { allowRequest, cancelTask, createTask, getTask, recordApproval, transitionTask } = require('../.test-build/task-store.js');
-const { executeTool, hasPermission } = require('../.test-build/tools.js');
+} = require('../.test-build/lib/agent/openai-provider.js');
+const { allowRequest, cancelTask, createTask, getTask, recordApproval, transitionTask } = require('../.test-build/lib/agent/task-store.js');
+const { executeTool, hasPermission } = require('../.test-build/lib/agent/tools.js');
+const {
+  createProject,
+  createProjectTask,
+  getProject,
+  readProjectFile,
+  rollbackProject,
+  validateRelativeProjectPath,
+  writeGeneratedFiles,
+} = require('../.test-build/lib/builder/project-store.js');
+const { createProjectArchive } = require('../.test-build/lib/builder/archive.js');
+const { runProjectGeneration } = require('../.test-build/lib/builder/runner.js');
+const { runSandboxCheck } = require('../.test-build/lib/builder/sandbox.js');
+const { gunzipSync } = require('node:zlib');
 
 const validEnv = {
   TINAN_AI_PROVIDER: 'openai-compatible',
   TINAN_AI_API_KEY: 'server-only-test-key',
   TINAN_AI_MODEL: 'test-model',
   TINAN_AI_BASE_URL: 'https://ai.example.test/v1',
+};
+const generatedProject = {
+  name: 'Sample Project',
+  specification: 'A small generated project.',
+  technology: ['Node.js', 'TypeScript'],
+  tasks: ['Add a greeting module'],
+  files: [{ path: 'src/index.ts', content: 'export const greeting = "hello";\n' }],
 };
 
 test('demo is the explicit default and provider configuration requires server credentials', () => {
@@ -154,4 +174,110 @@ test('demo planning never selects tools and identifies sensitive goals', async (
   assert.equal(task.status, 'awaiting_approval');
   assert.equal(task.simulated, true);
   assert.equal(task.selectedTools.length, 0);
+});
+
+test('generated project paths reject traversal, hidden files, and duplicate paths', () => {
+  assert.equal(validateRelativeProjectPath('src/index.ts'), 'src/index.ts');
+  for (const candidate of ['../escape.ts', '/absolute.ts', '.env', 'src/.secret', 'src/../../escape', 'src/key.pem']) {
+    assert.throws(() => validateRelativeProjectPath(candidate), /not permitted/);
+  }
+  assert.throws(() => validatePlan({}), ProviderError);
+  const { validateGeneratedProject } = require('../.test-build/lib/agent/openai-provider.js');
+  assert.throws(() => validateGeneratedProject({
+    ...generatedProject,
+    files: [{ path: 'src/a.ts', content: 'a' }, { path: 'src/a.ts', content: 'b' }],
+  }), /duplicate/);
+});
+
+test('project workspaces are isolated, readable, exportable, and rollback generated updates', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-project-test-'));
+  const previousRoot = process.env.TINAN_PROJECTS_DIR;
+  process.env.TINAN_PROJECTS_DIR = root;
+  try {
+    const first = await createProject(generatedProject);
+    const second = await createProject({ ...generatedProject, name: 'Another Project', files: [{ path: 'src/index.ts', content: 'other\n' }] });
+    assert.notEqual(first.id, second.id);
+    assert.equal(await readProjectFile(first.id, 'src/index.ts'), generatedProject.files[0].content);
+    assert.equal(await readProjectFile(second.id, 'src/index.ts'), 'other\n');
+    await assert.rejects(readProjectFile(first.id, '../package.json'), /not permitted/);
+
+    await writeGeneratedFiles(first.id, {
+      ...generatedProject,
+      files: [{ path: 'src/index.ts', content: 'export const greeting = "updated";\n' }, { path: 'README.md', content: '# Sample\n' }],
+    });
+    assert.match(await readProjectFile(first.id, 'src/index.ts'), /updated/);
+    const rolledBack = await rollbackProject(first.id);
+    assert.deepEqual(rolledBack.files, ['src/index.ts']);
+    assert.equal(await readProjectFile(first.id, 'src/index.ts'), generatedProject.files[0].content);
+
+    const exported = createProjectArchive(await (async () => {
+      const content = await readProjectFile(first.id, 'src/index.ts');
+      return [{ path: 'src/index.ts', content: Buffer.from(content) }];
+    })());
+    assert.match(gunzipSync(exported).toString('utf8'), /export const greeting/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.TINAN_PROJECTS_DIR;
+    else process.env.TINAN_PROJECTS_DIR = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('project generation uses the configured provider, reports failure, and supports cancellation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-builder-runner-'));
+  const previous = {
+    root: process.env.TINAN_PROJECTS_DIR,
+    provider: process.env.TINAN_AI_PROVIDER,
+    key: process.env.TINAN_AI_API_KEY,
+    model: process.env.TINAN_AI_MODEL,
+  };
+  process.env.TINAN_PROJECTS_DIR = root;
+  process.env.TINAN_AI_PROVIDER = 'openai-compatible';
+  process.env.TINAN_AI_API_KEY = 'server-test-key';
+  process.env.TINAN_AI_MODEL = 'test-model';
+  try {
+    const task = createProjectTask('Create a starter', 'generation');
+    await runProjectGeneration(task, async () => generatedProject);
+    assert.equal(task.status, 'completed');
+    assert.ok(task.projectId);
+    assert.equal((await getProject(task.projectId)).files.length, 1);
+
+    const failed = createProjectTask('fail generation', 'generation');
+    await runProjectGeneration(failed, async () => { throw new Error('Provider unavailable.'); });
+    assert.equal(failed.status, 'failed');
+    assert.match(failed.errors[0], /Provider unavailable/);
+
+    const cancelled = createProjectTask('cancel generation', 'generation');
+    const pending = runProjectGeneration(cancelled, (_requirements, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    }));
+    const { cancelProjectTask } = require('../.test-build/lib/builder/project-store.js');
+    cancelProjectTask(cancelled.id);
+    await pending;
+    assert.equal(cancelled.status, 'cancelled');
+  } finally {
+    for (const [key, value] of Object.entries({
+      TINAN_PROJECTS_DIR: previous.root,
+      TINAN_AI_PROVIDER: previous.provider,
+      TINAN_AI_API_KEY: previous.key,
+      TINAN_AI_MODEL: previous.model,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('sandbox never falls back to host commands when Docker image is not digest-pinned', async () => {
+  const task = createProjectTask('', 'check');
+  const previousImage = process.env.TINAN_SANDBOX_IMAGE;
+  delete process.env.TINAN_SANDBOX_IMAGE;
+  try {
+    const result = await runSandboxCheck('00000000-0000-4000-8000-000000000000', task, 'build', new AbortController().signal);
+    assert.equal(result.status, 'unavailable');
+    assert.match(result.output, /digest-pinned/);
+  } finally {
+    if (previousImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
+    else process.env.TINAN_SANDBOX_IMAGE = previousImage;
+  }
 });

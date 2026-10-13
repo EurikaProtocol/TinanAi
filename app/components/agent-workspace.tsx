@@ -194,10 +194,12 @@ export default function AgentWorkspace() {
         <div className="workspace-label tools-label">MORE TO EXPLORE</div>
         <nav className="primary-nav" aria-label="Planned features">
           {unavailablePages.map((page) => (
-            <button className="nav-item planned-item" disabled key={page} title={`${page} is planned, not available yet`}>
-              <span className="nav-icon" aria-hidden="true">◇</span>{page}
-              <span className="planned-label">PLANNED</span>
-            </button>
+            page === 'Projects'
+              ? <Link className="nav-item planned-item" href="/projects" key={page}><span className="nav-icon" aria-hidden="true">◇</span>Project Builder<span className="planned-label">BETA</span></Link>
+              : <button className="nav-item planned-item" disabled key={page} title={`${page} is planned, not available yet`}>
+                <span className="nav-icon" aria-hidden="true">◇</span>{page}
+                <span className="planned-label">PLANNED</span>
+              </button>
           ))}
         </nav>
 
