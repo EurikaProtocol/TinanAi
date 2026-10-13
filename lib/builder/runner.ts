@@ -1,5 +1,5 @@
 import { generateProject, getOpenAICompatibleConfig, getProviderMode, ProviderError } from '../agent/openai-provider';
-import { acquireProjectLock, createProject, getProject, getProjectTaskSignal, recordProjectCheck, releaseProjectLock, updateProjectTask, writeGeneratedFiles } from './project-store';
+import { acquireProjectLock, createProject, getProject, getProjectTaskForOwner, getProjectTaskSignal, recordProjectCheck, releaseProjectLock, updateProjectTask, writeGeneratedFiles } from './project-store';
 import { runSandboxCheck } from './sandbox';
 import type { ProjectTask } from './project-store';
 
@@ -19,7 +19,11 @@ export async function runProjectGeneration(
     }
     getOpenAICompatibleConfig();
     const generated = await generator(task.requirements, signal);
-    if (signal?.aborted || task.status === 'cancelled') return;
+    const currentTask = await getProjectTaskForOwner(task.id, task.ownerId);
+    if (signal?.aborted || !currentTask || currentTask.status !== 'generating') {
+      if (currentTask) Object.assign(task, currentTask);
+      return;
+    }
     const project = task.projectId
       ? await writeGeneratedFiles(task.projectId, generated, task.ownerId)
       : await createProject(generated, task.ownerId);

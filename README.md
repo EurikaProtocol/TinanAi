@@ -25,9 +25,7 @@ All provider secrets are server-only. Do not prefix these values with `NEXT_PUBL
 | `TINAN_AUTH_USERNAME` | Required | Single-owner Basic Auth username for the application and API. |
 | `TINAN_AUTH_PASSWORD` | Required | Single-owner Basic Auth password; must be at least 32 characters. Set server-side and use HTTPS in production. |
 | `TINAN_ENABLE_FILE_READING` | No | Must be `true` to allow explicitly authorized workspace file reads. |
-| `TINAN_PROJECTS_DIR` | No | Root directory for isolated generated project workspaces; defaults to the OS temporary directory at `tinan-ai-projects`. |
-| `TINAN_SANDBOX_IMAGE` | For checks | Pre-pulled `node:<tag>@sha256:<64 lowercase hex>` image. Docker runs only fixed npm check commands with network disabled, a read-only container root, resource limits, and the generated project mounted as the only writable workspace. The service never pulls images itself. |
-| `TINAN_SANDBOX_VERIFIED` | For checks | Must be `true` only after an operator has verified Docker isolation in the deployment environment. Checks return unavailable and do not spawn Docker otherwise. |
+| `TINAN_SANDBOX_VERIFIED` | No | Execution remains disabled. Setting this value does not enable project checks. |
 
 No real provider credentials were available during implementation, so provider integration was tested with mocked HTTP responses; a paid/external provider connection is not claimed.
 
@@ -35,7 +33,40 @@ No real provider credentials were available during implementation, so provider i
 
 This project uses `@opennextjs/cloudflare@1.19.11` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.18 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). The adapter version was chosen instead of `1.20.11` because the latter added npm audit findings in this repository's lockfile. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
 
-The OpenNext adapter build and basic local Wrangler preview have been verified. A mock-provider local Worker run accepted generation and reported success, but a subsequent request for the generated project returned `404`: the current filesystem-backed project store does not persist between Worker requests. Therefore the Project Builder APIs are **not yet compatible for usable Cloudflare project storage**, and this application must not be treated as fully Cloudflare-compatible for production. A durable Cloudflare storage/task adapter (such as R2 plus D1 or Durable Objects) is required before project generation/history can be guaranteed across requests, isolates, or restarts. Sandbox execution requiring Docker and `child_process` is unsupported on Workers and must remain disabled there.
+Project metadata, tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the project-store module between operations to simulate separate requests and a Worker restart.
+
+### Provision durable storage
+
+Create the Cloudflare resources from the repository root:
+
+```bash
+npx wrangler d1 create tinan-ai-metadata
+npx wrangler r2 bucket create tinan-ai-project-files
+```
+
+Replace the all-zero placeholder `database_id` in `wrangler.jsonc` with the D1 database ID returned by the first command. Keep the names and binding identifiers aligned with the config:
+
+| Resource | Wrangler binding | Resource name |
+| --- | --- | --- |
+| D1 database | `TINAN_DB` | `tinan-ai-metadata` |
+| R2 bucket | `TINAN_PROJECT_FILES` | `tinan-ai-project-files` |
+
+Apply the D1 migration to the remote database before deploying:
+
+```bash
+npx wrangler d1 migrations apply tinan-ai-metadata --remote
+```
+
+For local Worker preview, initialize Wrangler's local D1 database first:
+
+```bash
+npx wrangler d1 migrations apply tinan-ai-metadata --local
+npm run preview:cloudflare
+```
+
+Wrangler persists local D1/R2 preview state under the ignored `.wrangler/` directory. Cloudflare production and preview Workers need both bindings configured; the names above are already declared in `wrangler.jsonc`. D1 stores project/task JSON metadata, ownership, check/repair state, and locks. R2 stores source files and durable rollback snapshots. Do not manually expose either binding to browser code.
+
+Project persistence tests verify create, update, retrieve, export, and rollback through newly loaded storage modules against the same D1/R2 backing data. This exercises the durable binding contract across request/module restarts; production Cloudflare account provisioning and remote persistence have not been tested from this environment.
 
 ### Workers Builds screen
 
@@ -52,7 +83,7 @@ This repository currently has only Copilot automation workflows, not an applicat
 
 ### Worker runtime settings
 
-Set the following under the Worker's **Settings → Variables and Secrets** for each environment (production and preview/development separately). Do not use these values to enable a production rollout until the filesystem/task persistence limitation above has been resolved.
+Set the following under the Worker's **Settings → Variables and Secrets** for each environment (production and preview/development separately).
 
 | Name | Type | Value |
 | --- | --- | --- |
@@ -64,28 +95,27 @@ Set the following under the Worker's **Settings → Variables and Secrets** for 
 | `TINAN_AI_BASE_URL` | Variable | `https://openrouter.ai/api/v1`. |
 | `TINAN_AI_TIMEOUT_MS` | Variable | Optional integer from `1000` to `60000`; e.g. `20000`. |
 | `TINAN_ENABLE_FILE_READING` | Variable | `false` unless explicitly needed. |
-| `TINAN_SANDBOX_VERIFIED` | Variable | `false`; do not enable Worker sandbox execution. |
+| `TINAN_SANDBOX_VERIFIED` | Variable | `false`; execution remains disabled in code. |
 
 Set the provider to `openai-compatible` only when intentionally enabling paid/credit-consuming provider calls. Cloudflare secrets/variables are runtime settings and must be present on the deployed Worker; build-time secrets are not a substitute. For local Wrangler preview, copy `.dev.vars.example` to `.dev.vars` and use test-only values. Never put a real provider key in the example file.
 
 ## Project Builder
 
 - Visit `/projects` to submit natural-language requirements. A configured real provider is required; without it, generation fails with a setup message and no project is claimed as generated.
-- Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Each project lives in a separate permission-restricted filesystem directory.
+- Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Project metadata/tasks are owner-scoped in D1; source files and rollback snapshots use owner-prefixed R2 keys.
 - Source export is a `.tar.gz` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
-- Lint, type-check, test, and build checks run only inside Docker with a digest-pinned image, no network, no install step, resource limits, and static command choices. Generated project dependencies may be absent, so failed checks are recorded rather than hidden.
-- After a failed check, one explicit AI repair attempt is available per project. Updates are diffed and the prior source can be restored using the process-local rollback snapshot.
-- Checks are disabled until the operator attests that real sandbox isolation has been verified with `TINAN_SANDBOX_VERIFIED=true`. Projects declaring npm scripts outside the fixed command allowlist are rejected before Docker starts.
+- Project execution and all generated code checks are disabled; check requests return unavailable and never spawn a process or execute model-generated commands.
+- After a failed check, one explicit AI repair attempt is available per project. Updates are diffed and the prior source can be restored from the durable R2 snapshot.
 
 ## Persistence and deployment limits
 
-The app and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; requests are challenged before the app runs, unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is recorded with projects/tasks and checked for reads, changes, exports, approvals, and cancellation. Existing workspaces without a valid owner ID are not visible through owner-scoped APIs. This is a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project files and metadata use the configured server filesystem (default OS temporary directory); task queues, cancellation state, and rollback snapshots remain process-local and are lost on restart. There is no database or durable shared storage.
+The app and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; requests are challenged before the app runs, unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
 
 ## Phase 4 verification status
 
 - Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
-- Docker Engine 28.0.4 is available, but there is no Node image in its local image cache and `TINAN_SANDBOX_IMAGE` is unset. Real sandbox project checks remain blocked; `TINAN_SANDBOX_VERIFIED` is also unset, so execution fails closed even if an image is later provided until an operator verifies isolation.
-- Tests cover mocked provider responses/failures/timeouts, mock-generated website file export, cross-owner resource filtering, traversal rejection, task cancellation, and mocked sandbox command construction/failure. They do not prove live OpenRouter connectivity, a real model-generated project, or real Docker isolation. Database persistence is not implemented.
+- Project checks and execution are disabled by the implementation; no Docker isolation is claimed. `TINAN_SANDBOX_VERIFIED` remains `false`.
+- Tests cover mocked provider responses/failures/timeouts, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, owner filtering, path traversal rejection, task persistence/cancellation, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
 
 ### Manual OpenRouter website generation test
 
@@ -128,9 +158,10 @@ This live test has not been run from this environment. A successful mocked unit 
 This repository has no application deployment workflow; the visible GitHub Actions workflows are Copilot automations, not application deployment. Configure the environment on the actual Next.js hosting platform. Do not deploy or change DNS until the owner explicitly approves. All items below remain required before production use:
 
 - [ ] Replace single-owner Basic Auth with the selected production identity provider before multi-user use; preserve server-side ownership checks, origin protections, and HTTPS.
-- [ ] Choose a supported database and durable project-file storage. Add migrations, per-user project ownership, transactional task state, access controls, retention policy, encrypted transport/storage, automated backups, and a tested restore procedure. Configure `TINAN_PROJECTS_DIR` only for a durable, access-restricted volume until object storage is implemented.
+- [ ] Create the Cloudflare D1 database and R2 bucket listed in the Cloudflare Workers section, replace the placeholder D1 ID in `wrangler.jsonc`, apply migrations remotely, and verify persistence in a staging Worker across deploy/restart.
+- [ ] Configure D1/R2 backups, retention, restore drills, and distributed rate limits before production. Existing filesystem-only projects require a separately planned migration.
 - [ ] Configure host-side server-only secrets: `TINAN_AUTH_USERNAME`, a strong `TINAN_AUTH_PASSWORD`, `TINAN_AI_PROVIDER=openai-compatible`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL`; set `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1` and `TINAN_AI_TIMEOUT_MS` as appropriate. Map the existing OpenRouter secret into `TINAN_AI_API_KEY` in the application host’s secret manager; GitHub Actions secrets do not automatically reach the running app. Keep file reading disabled unless specifically required and authorized.
-- [ ] Provision a dedicated sandbox worker/host and approved digest-pinned Node image, then set `TINAN_SANDBOX_IMAGE`. Keep untrusted project execution isolated from the web process and production credentials; do not expose a privileged Docker socket to a publicly reachable application. Verify network denial, filesystem boundaries, resource/time limits, cancellation, and cleanup with a real container, then explicitly set `TINAN_SANDBOX_VERIFIED=true`.
+- [ ] Keep project execution disabled. Any future execution feature needs a separately reviewed isolated execution service; do not enable it by setting a flag or exposing Docker to the Worker.
 - [ ] Configure HTTPS/TLS for `tinaneureka.com`, force HTTPS, set appropriate security headers, and verify secure cookie settings. Preserve current DNS and hosting assignments unless separately approved.
 - [ ] Configure distributed rate limits and execution budgets, provider and sandbox timeouts, structured redacted audit logs, metrics/alerts, error tracking, and operational runbooks. Ensure logs never contain provider keys or sensitive project contents.
 - [ ] Validate generation, file persistence, export, authorization/isolation, backup restoration, sandbox checks, cancellation, and failure recovery in staging. Run dependency/security checks and production build before requesting deployment approval.

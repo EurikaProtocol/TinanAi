@@ -154,7 +154,17 @@ export async function getProjectTask(id: string, ownerId: string): Promise<Proje
   if (!row) return undefined;
   try {
     const task = JSON.parse(row.record_json) as ProjectTask;
-    return task.id === id && task.ownerId === ownerId ? task : undefined;
+    if (task.id !== id || task.ownerId !== ownerId) return undefined;
+    if (task.status === 'generating' && Date.parse(task.updatedAt) < Date.now() - 15 * 60 * 1000) {
+      task.status = 'failed';
+      task.progress.push('Task was marked failed after its Worker execution did not resume.');
+      task.errors.push('Task execution was interrupted by a Worker restart or timeout.');
+      task.updatedAt = new Date().toISOString();
+      await TINAN_DB.prepare(
+        "UPDATE project_tasks SET record_json = ?, status = 'failed', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
+      ).bind(JSON.stringify(task), task.updatedAt, id, ownerId).run();
+    }
+    return task;
   } catch {
     return undefined;
   }

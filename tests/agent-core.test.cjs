@@ -350,6 +350,9 @@ test('project metadata, files, tasks, and rollback snapshots survive fresh stora
     assert.equal((await nextRestart.getProjectForOwner(project.id, ownerA)).id, project.id);
     assert.equal(await nextRestart.getProjectForOwner(project.id, ownerB), undefined);
     assert.equal(await nextRestart.readProjectFile(project.id, 'src/index.ts', ownerA), generatedProject.files[0].content);
+    await assert.rejects(nextRestart.writeGeneratedFiles(project.id, generatedProject, ownerB), /Project not found/);
+    await assert.rejects(nextRestart.exportProjectFiles(project.id, ownerB), /Project not found/);
+    await assert.rejects(nextRestart.rollbackProject(project.id, ownerB), /Project not found/);
 
     await nextRestart.snapshotProject(project.id, ownerA);
     await nextRestart.writeGeneratedFiles(project.id, {
@@ -360,6 +363,13 @@ test('project metadata, files, tasks, and rollback snapshots survive fresh stora
     assert.match(await afterUpdateRestart.readProjectFile(project.id, 'src/index.ts', ownerA), /durable update/);
     await afterUpdateRestart.rollbackProject(project.id, ownerA);
     assert.equal(await freshProjectStore().readProjectFile(project.id, 'src/index.ts', ownerA), generatedProject.files[0].content);
+
+    const interrupted = await createProjectTask('Interrupted generation', ownerA);
+    const expiredTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+    interrupted.updatedAt = expiredTime;
+    database.prepare('UPDATE project_tasks SET record_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(interrupted), expiredTime, interrupted.id);
+    assert.equal((await freshProjectStore().getProjectTaskForOwner(interrupted.id, ownerA)).status, 'failed');
   } finally {
     resetProjectStorage();
   }
