@@ -2258,6 +2258,7 @@ textarea:focus-visible {
     .builder-intro {
       align-items: flex-start;
       flex-direction: column;
+    }
   }
 
   @media (max-width: 620px) {

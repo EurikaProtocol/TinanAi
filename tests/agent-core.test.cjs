@@ -459,6 +459,12 @@ test('project generation uses the configured provider, reports failure, and supp
 
 test('cancellation cannot mark a task cancelled after its atomic commit begins', async () => {
   resetProjectStorage();
+  const previousProvider = process.env.TINAN_AI_PROVIDER;
+  const previousKey = process.env.TINAN_AI_API_KEY;
+  const previousModel = process.env.TINAN_AI_MODEL;
+  process.env.TINAN_AI_PROVIDER = 'openai-compatible';
+  process.env.TINAN_AI_API_KEY = 'server-test-key';
+  process.env.TINAN_AI_MODEL = 'test-model';
   const project = await createProject(generatedProject, ownerA);
   const task = await createProjectTask('Update the project', ownerA, 'repair', project.id);
   const updatedProject = {
@@ -493,6 +499,14 @@ test('cancellation cannot mark a task cancelled after its atomic commit begins',
     releaseWrite();
     projectBindings.TINAN_PROJECT_FILES.put = originalPut;
     resetProjectStorage();
+    for (const [key, value] of Object.entries({
+      TINAN_AI_PROVIDER: previousProvider,
+      TINAN_AI_API_KEY: previousKey,
+      TINAN_AI_MODEL: previousModel,
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 
