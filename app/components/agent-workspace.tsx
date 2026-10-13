@@ -224,7 +224,7 @@ export default function AgentWorkspace() {
               <h1>{view === 'dashboard' ? 'Good to see you.' : 'What are we building?'}</h1>
               <p>{view === 'dashboard' ? 'A thoughtful place to turn ideas into actionable plans.' : 'Describe a goal and TINAN will shape it into a clear plan.'}</p>
             </div>
-            <div className="date-label"><span className="live-pulse" />YOUR PRIVATE WORKSPACE</div>
+            <div className="date-label"><span className="live-pulse" />AGENT WORKSPACE · PROCESS LOCAL</div>
           </div>
 
           {view === 'dashboard' && (
