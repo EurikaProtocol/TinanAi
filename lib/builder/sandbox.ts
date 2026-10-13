@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { ProjectTask } from './project-store';
-import { workspaceRoot } from './project-store';
+import { getProject, readProjectFile, workspaceRoot } from './project-store';
 
 export type SandboxCheck = 'lint' | 'typecheck' | 'test' | 'build';
 export type SandboxResult = {
@@ -17,6 +17,28 @@ const fixedCommands: Record<SandboxCheck, string[]> = {
   test: ['npm', 'test'],
   build: ['npm', 'run', 'build'],
 };
+const permittedScripts: Record<string, string> = {
+  lint: 'eslint .',
+  typecheck: 'tsc --noEmit',
+  test: 'node --test',
+  build: 'next build',
+};
+
+async function hasOnlyPermittedScripts(projectId: string): Promise<boolean> {
+  const project = await getProject(projectId);
+  if (!project) return false;
+  if (!project.files.includes('package.json')) return true;
+  try {
+    const manifest = JSON.parse(await readProjectFile(projectId, 'package.json')) as { scripts?: unknown };
+    if (manifest.scripts === undefined) return true;
+    if (typeof manifest.scripts !== 'object' || manifest.scripts === null || Array.isArray(manifest.scripts)) return false;
+    return Object.entries(manifest.scripts).every(([name, command]) =>
+      Object.hasOwn(permittedScripts, name) && command === permittedScripts[name],
+    );
+  } catch {
+    return false;
+  }
+}
 
 export async function runSandboxCheck(
   projectId: string,
@@ -32,6 +54,15 @@ export async function runSandboxCheck(
       status: 'unavailable',
       output: 'Sandbox is not configured. Set TINAN_SANDBOX_IMAGE to a pre-pulled, digest-pinned official Node image.',
     };
+  }
+  if (process.env.TINAN_SANDBOX_VERIFIED !== 'true') {
+    return {
+      status: 'unavailable',
+      output: 'Sandbox execution is disabled until an operator verifies the real container isolation and sets TINAN_SANDBOX_VERIFIED=true.',
+    };
+  }
+  if (!await hasOnlyPermittedScripts(projectId)) {
+    return { status: 'unavailable', output: 'Project package scripts are not in the fixed sandbox allowlist; no generated command was run.' };
   }
   const uid = typeof process.getuid === 'function' ? process.getuid() : 1000;
   const gid = typeof process.getgid === 'function' ? process.getgid() : 1000;

@@ -44,6 +44,11 @@ export function getTask(id: string): AgentTask | undefined {
   return runtime().tasks.get(id);
 }
 
+export function getTaskForOwner(id: string, ownerId: string): AgentTask | undefined {
+  const task = getTask(id);
+  return task?.ownerId === ownerId ? task : undefined;
+}
+
 export function getTaskSignal(id: string): AbortSignal | undefined {
   return runtime().controllers.get(id)?.signal;
 }
@@ -65,16 +70,16 @@ export function appendTaskError(id: string, message: string): void {
   if (task) task.errors.push(message.slice(0, 500));
 }
 
-export function cancelTask(id: string): AgentTask | undefined {
-  const task = getTask(id);
+export function cancelTask(id: string, ownerId: string): AgentTask | undefined {
+  const task = getTaskForOwner(id, ownerId);
   if (!task || ['completed', 'failed', 'cancelled'].includes(task.status)) return task;
   runtime().controllers.get(id)?.abort();
   transitionTask(id, 'cancelled', 'Task cancelled by the user.');
   return task;
 }
 
-export function recordApproval(id: string, approved: boolean): AgentTask {
-  const task = getTask(id);
+export function recordApproval(id: string, approved: boolean, ownerId: string): AgentTask {
+  const task = getTaskForOwner(id, ownerId);
   if (!task || task.status !== 'awaiting_approval') {
     throw new Error('This task is not waiting for approval.');
   }

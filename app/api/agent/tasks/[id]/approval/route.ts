@@ -1,12 +1,15 @@
 import { after, NextResponse } from 'next/server';
 import { approveAndExecute } from '@/lib/agent/engine';
-import { getTask, recordApproval } from '@/lib/agent/task-store';
+import { getRequestOwnerId } from '@/lib/auth';
+import { getTaskForOwner, recordApproval } from '@/lib/agent/task-store';
 
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(request: Request, context: RouteContext) {
+  const ownerId = getRequestOwnerId(request);
+  if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
   const { id } = await context.params;
-  const task = getTask(id);
+  const task = getTaskForOwner(id, ownerId);
   if (!task) return NextResponse.json({ error: 'Task not found.' }, { status: 404 });
   let body: unknown;
   try {
@@ -18,7 +21,7 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: 'An approved boolean is required.' }, { status: 400 });
   }
   try {
-    recordApproval(id, body.approved);
+    recordApproval(id, body.approved, ownerId);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Approval could not be recorded.' }, { status: 409 });
   }

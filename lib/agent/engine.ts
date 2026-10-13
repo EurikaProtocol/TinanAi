@@ -113,10 +113,12 @@ export function createTaskRecord(
   objective: string,
   provider: 'demo' | 'openai-compatible',
   authorizedPaths: string[],
+  ownerId: string,
   timestamp = new Date().toISOString(),
 ): AgentTask {
   return {
     id,
+    ownerId,
     objective,
     status: 'planning',
     provider,

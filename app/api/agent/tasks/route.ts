@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { after, NextResponse } from 'next/server';
+import { getRequestOwnerId } from '@/lib/auth';
 import { createTaskRecord, planTask } from '@/lib/agent/engine';
 import { getOpenAICompatibleConfig, getProviderMode, ProviderError } from '@/lib/agent/openai-provider';
 import { allowRequest, createTask } from '@/lib/agent/task-store';
@@ -8,7 +9,8 @@ export const runtime = 'nodejs';
 const MAX_OBJECTIVE_LENGTH = 2000;
 const MAX_BODY_BYTES = 16 * 1024;
 
-export async function GET() {
+export async function GET(request: Request) {
+  if (!getRequestOwnerId(request)) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
   let provider: 'demo' | 'openai-compatible' | 'unconfigured';
   let providerConfigured = true;
   try {
@@ -22,7 +24,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  if (!allowRequest('process-global')) {
+  const ownerId = getRequestOwnerId(request);
+  if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
+  if (!allowRequest(`agent-tasks:${ownerId}`)) {
     return NextResponse.json({ error: 'Too many task requests. Try again in a minute.' }, { status: 429 });
   }
 
@@ -67,7 +71,7 @@ export async function POST(request: Request) {
     ? body.authorizedPaths.filter((value): value is string => typeof value === 'string' && value.length <= 300).slice(0, 8)
     : [];
   const authorizedPaths = process.env.TINAN_ENABLE_FILE_READING === 'true' ? requestedPaths : [];
-  const task = createTaskRecord(randomUUID(), objective, provider, authorizedPaths);
+  const task = createTaskRecord(randomUUID(), objective, provider, authorizedPaths, ownerId);
   createTask(task);
 
   after(() => planTask(task));

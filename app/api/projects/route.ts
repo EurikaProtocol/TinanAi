@@ -1,18 +1,23 @@
 import { after, NextResponse } from 'next/server';
+import { getRequestOwnerId } from '@/lib/auth';
 import { getOpenAICompatibleConfig, getProviderMode, ProviderError } from '@/lib/agent/openai-provider';
 import { allowRequest } from '@/lib/agent/task-store';
-import { createProjectTask, getProject, listProjects } from '@/lib/builder/project-store';
+import { createProjectTask, getProjectForOwner, listProjects } from '@/lib/builder/project-store';
 import { runProjectGeneration } from '@/lib/builder/runner';
 
 export const runtime = 'nodejs';
 const maxBodyBytes = 16 * 1024;
 
-export async function GET() {
-  return NextResponse.json({ projects: await listProjects(), persistence: 'local-filesystem' });
+export async function GET(request: Request) {
+  const ownerId = getRequestOwnerId(request);
+  if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
+  return NextResponse.json({ projects: await listProjects(ownerId), persistence: 'local-filesystem' });
 }
 
 export async function POST(request: Request) {
-  if (!allowRequest('project-builder-global', Date.now(), 5)) {
+  const ownerId = getRequestOwnerId(request);
+  if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
+  if (!allowRequest(`project-builder:${ownerId}`, Date.now(), 5)) {
     return NextResponse.json({ error: 'Too many project requests. Try again in a minute.' }, { status: 429 });
   }
   const length = Number(request.headers.get('content-length') || 0);
@@ -44,10 +49,10 @@ export async function POST(request: Request) {
     );
   }
 
-  if ('projectId' in body && !(await getProject(body.projectId as string))) {
+  if ('projectId' in body && !(await getProjectForOwner(body.projectId as string, ownerId))) {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   }
-  const task = createProjectTask(requirements, 'generation', 'projectId' in body ? body.projectId as string : null);
+  const task = createProjectTask(requirements, ownerId, 'generation', 'projectId' in body ? body.projectId as string : null);
   after(() => runProjectGeneration(task));
   return NextResponse.json({ task, persistence: 'local-filesystem' }, { status: 202 });
 }

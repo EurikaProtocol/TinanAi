@@ -21,7 +21,7 @@ export async function runProjectGeneration(
     if (signal?.aborted || task.status === 'cancelled') return;
     const project = task.projectId
       ? await writeGeneratedFiles(task.projectId, generated)
-      : await createProject(generated);
+      : await createProject(generated, task.ownerId);
     task.projectId = project.id;
     updateProjectTask(task.id, 'completed', `Generated ${project.files.length} files for ${project.name}.`);
   } catch (error) {

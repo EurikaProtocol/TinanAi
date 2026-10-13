@@ -41,6 +41,7 @@ export type ProgressEvent = {
 
 export type AgentTask = {
   id: string;
+  ownerId: string;
   objective: string;
   status: TaskStatus;
   provider: 'demo' | 'openai-compatible';

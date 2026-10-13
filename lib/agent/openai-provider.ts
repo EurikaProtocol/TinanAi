@@ -139,6 +139,8 @@ async function requestJson(
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) throw new ProviderError('The configured AI provider rejected its credentials.');
       if (response.status === 429) throw new ProviderError('The configured AI provider is rate limiting requests. Try again later.');
+      if (response.status === 402) throw new ProviderError('The configured AI provider reports insufficient credits or a payment requirement.');
+      if (response.status === 408 || response.status === 504) throw new ProviderError('The configured AI provider request timed out.');
       throw new ProviderError(`The configured AI provider returned HTTP ${response.status}.`);
     }
     const payload = await readBoundedResponse(response);

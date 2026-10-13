@@ -6,6 +6,7 @@ import type { GeneratedProject } from '../agent/openai-provider';
 
 export type ProjectRecord = {
   id: string;
+  ownerId: string;
   name: string;
   specification: string;
   technology: string[];
@@ -29,6 +30,7 @@ export type ProjectRecord = {
 
 export type ProjectTask = {
   id: string;
+  ownerId: string;
   kind: 'generation' | 'repair' | 'check';
   projectId: string | null;
   requirements: string;
@@ -67,6 +69,7 @@ function state(): BuilderRuntime {
 
 export function createProjectTask(
   requirements: string,
+  ownerId: string,
   kind: ProjectTask['kind'] = 'generation',
   projectId: string | null = null,
   check: string | null = null,
@@ -74,6 +77,7 @@ export function createProjectTask(
   const now = new Date().toISOString();
   const task: ProjectTask = {
     id: randomUUID(),
+    ownerId,
     kind,
     projectId,
     requirements,
@@ -99,9 +103,14 @@ export function getProjectTask(id: string): ProjectTask | undefined {
   return state().tasks.get(id);
 }
 
-export function countRunningChecks(): number {
+export function getProjectTaskForOwner(id: string, ownerId: string): ProjectTask | undefined {
+  const task = getProjectTask(id);
+  return task?.ownerId === ownerId ? task : undefined;
+}
+
+export function countRunningChecks(ownerId: string): number {
   return Array.from(state().tasks.values()).filter((task) =>
-    task.kind === 'check' && task.status === 'generating',
+    task.ownerId === ownerId && task.kind === 'check' && task.status === 'generating',
   ).length;
 }
 
@@ -156,8 +165,8 @@ export function updateProjectTask(id: string, status: ProjectTask['status'], mes
   if (status === 'failed') task.errors.push(message);
 }
 
-export function cancelProjectTask(id: string): ProjectTask | undefined {
-  const task = getProjectTask(id);
+export function cancelProjectTask(id: string, ownerId: string): ProjectTask | undefined {
+  const task = getProjectTaskForOwner(id, ownerId);
   if (!task) return undefined;
   if (task.status === 'generating') {
     state().controllers.get(id)?.abort();
@@ -201,7 +210,7 @@ async function readRecord(directory: string): Promise<ProjectRecord> {
   const stat = await fs.lstat(metadataPath);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('Project metadata is invalid.');
   const record = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as ProjectRecord;
-  if (!record || !/^[0-9a-f-]{36}$/i.test(record.id) || !Array.isArray(record.files)) {
+  if (!record || !/^[0-9a-f-]{36}$/i.test(record.id) || !/^[a-f0-9]{64}$/.test(record.ownerId) || !Array.isArray(record.files)) {
     throw new Error('Project metadata is invalid.');
   }
   record.latestDiff ??= [];
@@ -243,8 +252,8 @@ async function safeFile(directory: string, relative: string): Promise<string> {
   return file;
 }
 
-export async function createProject(generated: GeneratedProject): Promise<ProjectRecord> {
-  if ((await listProjects()).length >= 100) throw new Error('Project storage limit reached (100 projects).');
+export async function createProject(generated: GeneratedProject, ownerId: string): Promise<ProjectRecord> {
+  if ((await listProjects(ownerId)).length >= 100) throw new Error('Project storage limit reached (100 projects).');
   const root = await ensureRoot();
   const id = randomUUID();
   const directory = projectDirectory(root, id);
@@ -262,6 +271,7 @@ export async function createProject(generated: GeneratedProject): Promise<Projec
     }
     const record: ProjectRecord = {
       id,
+      ownerId,
       name: generated.name,
       specification: generated.specification,
       technology: generated.technology,
@@ -295,14 +305,15 @@ export async function createProject(generated: GeneratedProject): Promise<Projec
   }
 }
 
-export async function listProjects(): Promise<ProjectRecord[]> {
+export async function listProjects(ownerId: string): Promise<ProjectRecord[]> {
   const root = await ensureRoot();
   const entries = await fs.readdir(root, { withFileTypes: true });
   const projects: ProjectRecord[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory() || !/^[0-9a-f-]{36}$/i.test(entry.name)) continue;
     try {
-      projects.push(await readRecord(projectDirectory(root, entry.name)));
+      const project = await readRecord(projectDirectory(root, entry.name));
+      if (project.ownerId === ownerId) projects.push(project);
     } catch {
       continue;
     }
@@ -321,6 +332,11 @@ export async function getProject(id: string): Promise<ProjectRecord | undefined>
   } catch {
     return undefined;
   }
+}
+
+export async function getProjectForOwner(id: string, ownerId: string): Promise<ProjectRecord | undefined> {
+  const project = await getProject(id);
+  return project?.ownerId === ownerId ? project : undefined;
 }
 
 export async function readProjectFile(id: string, relative: string): Promise<string> {
