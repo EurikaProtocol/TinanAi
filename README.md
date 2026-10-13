@@ -44,7 +44,7 @@ npx wrangler d1 create tinan-ai-metadata
 npx wrangler r2 bucket create tinan-ai-project-files
 ```
 
-Replace the all-zero placeholder `database_id` in `wrangler.jsonc` with the D1 database ID returned by the first command. Keep the names and binding identifiers aligned with the config:
+The deployment environment used for this work has no authenticated Cloudflare account, so no real D1 database could be verified or configured. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`), run the commands above in the intended account, and replace the all-zero placeholder `database_id` in `wrangler.jsonc` with the exact ID returned by `npx wrangler d1 create`. Do not deploy while the placeholder remains. Keep the names and binding identifiers aligned with the config:
 
 | Resource | Wrangler binding | Resource name |
 | --- | --- | --- |
@@ -81,7 +81,7 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 
 This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
 
-The Wrangler config declares only `tinaneureka.com` as a Custom Domain; `www.tinaneureka.com` is intentionally not configured. Cloudflare requires the domain to belong to an active zone in the deploying account and will manage the DNS record and certificate when this configuration is deployed. Verify the zone, existing DNS/hosting assignments, and migration plan in the Cloudflare dashboard before any deployment. This change does not perform a deploy or modify DNS.
+The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinan-ai.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
 
 ### Worker runtime settings
 
@@ -124,7 +124,7 @@ The app and APIs require a single-owner HTTP Basic Auth credential configured wi
 Only run this after configuring `TINAN_AI_PROVIDER=openai-compatible`, the OpenRouter key as server-side `TINAN_AI_API_KEY`, the exact OpenRouter model ID as `TINAN_AI_MODEL`, `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1`, and the two `TINAN_AUTH_*` values on the application host. The command below makes a real provider request and may incur charges; it does not pass the OpenRouter key to curl. Set `TINAN_AUTH_USERNAME` locally and curl will prompt for the corresponding Basic Auth password.
 
 ```bash
-APP_ORIGIN='https://tinaneureka.com'
+APP_ORIGIN='https://tinan-ai.<account-subdomain>.workers.dev'
 TASK_ID=$(curl --fail-with-body --silent --show-error \
   --user "$TINAN_AUTH_USERNAME" \
   --header "Origin: $APP_ORIGIN" \
@@ -155,7 +155,7 @@ tar -tzf tinan-sample-services.tar.gz
 
 This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
 
-## Production deployment checklist — tinaneureka.com
+## Cloudflare deployment readiness — workers.dev
 
 This repository has no application deployment workflow; the visible GitHub Actions workflows are Copilot automations, not application deployment. Configure the environment on the actual Next.js hosting platform. Do not deploy or change DNS until the owner explicitly approves. All items below remain required before production use:
 
@@ -164,7 +164,7 @@ This repository has no application deployment workflow; the visible GitHub Actio
 - [ ] Configure D1/R2 backups, retention, restore drills, and distributed rate limits before production. Existing filesystem-only projects require a separately planned migration.
 - [ ] Configure host-side server-only secrets: `TINAN_AUTH_USERNAME`, a strong `TINAN_AUTH_PASSWORD`, `TINAN_AI_PROVIDER=openai-compatible`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL`; set `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1` and `TINAN_AI_TIMEOUT_MS` as appropriate. Map the existing OpenRouter secret into `TINAN_AI_API_KEY` in the application host’s secret manager; GitHub Actions secrets do not automatically reach the running app. Keep file reading disabled unless specifically required and authorized.
 - [ ] Keep project execution disabled. Any future execution feature needs a separately reviewed isolated execution service; do not enable it by setting a flag or exposing Docker to the Worker.
-- [ ] Configure HTTPS/TLS for `tinaneureka.com`, force HTTPS, set appropriate security headers, and verify secure cookie settings. Preserve current DNS and hosting assignments unless separately approved.
+- [ ] Verify HTTPS, security headers, and secure cookie settings on the assigned `workers.dev` endpoint.
 - [ ] Configure distributed rate limits and execution budgets, provider and sandbox timeouts, structured redacted audit logs, metrics/alerts, error tracking, and operational runbooks. Ensure logs never contain provider keys or sensitive project contents.
 - [ ] Validate generation, file persistence, export, authorization/isolation, backup restoration, sandbox checks, cancellation, and failure recovery in staging. Run dependency/security checks and production build before requesting deployment approval.
 - [ ] Prepare a rollback plan and verify backups and monitoring before any approved release.
@@ -177,7 +177,7 @@ The current `npm audit` reports 9 findings (7 high, 2 moderate, 0 critical). The
 - High: direct `eslint-config-next@15.5.27` → `@next/eslint-plugin-next@15.5.27` → `fast-glob@3.3.1` → `micromatch@4.0.8` → `braces@3.0.3`.
 - Moderate: `postcss-nested@6.2.0` → `postcss-selector-parser@6.1.4` is affected by the parser advisory for versions below 7.1.6.
 
-`npm audit fix` had already applied compatible updates before this verification and the current audit remains at 9 findings. npm recommends Tailwind CSS 4.3.3 for the Tailwind-related findings, a major-version migration; its registry currently lists 3.4.19 as the last Tailwind 3 release, which remains in the reported affected range. For `eslint-config-next`, the suggested 14.2.35 remediation is a major downgrade from the installed 15.5.27 and does not match the installed Next.js 15 line. No additional dependency change was made because the available remediations are breaking; plan and validate the Tailwind/Next lint-tooling upgrades separately.
+`npm ci` and `npm audit` still report 9 findings (7 high, 2 moderate). No compatible safe fix is currently available without a major dependency migration: npm's Tailwind remediation is Tailwind CSS 4.3.3, while the installed Tailwind 3 line tops out at 3.4.19 and remains affected; npm's `eslint-config-next` suggestion is 14.2.35, a downgrade incompatible with the installed Next.js 15 line. The registry currently exposes `braces` 3.0.3, which remains in the affected range, and `postcss-nested` 6.x requires `postcss-selector-parser` 6.x while the parser advisory requires 7.1.6 or later. These findings remain unresolved and must be addressed in a separately tested Tailwind v4 / compatible Next lint-tooling migration; do not force-install incompatible versions.
 
 ## Local development and validation
 

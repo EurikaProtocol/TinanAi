@@ -7,6 +7,10 @@ export type TaskStatus =
   | 'failed'
   | 'cancelled';
 
+export function isActiveTaskStatus(status: TaskStatus): boolean {
+  return status === 'planning' || status === 'awaiting_approval' || status === 'executing';
+}
+
 export type ToolCall = {
   name: string;
   arguments: Record<string, unknown>;

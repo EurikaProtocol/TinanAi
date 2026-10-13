@@ -1430,8 +1430,9 @@ textarea:focus-visible {
     scroll-behavior: auto !important;
     transition-duration: 0.01ms !important;
   }
+}
 
-  .builder-shell {
+.builder-shell {
     min-height: 100vh;
     padding: 0 34px 18px;
     background:
@@ -2257,7 +2258,6 @@ textarea:focus-visible {
     .builder-intro {
       align-items: flex-start;
       flex-direction: column;
-    }
   }
 
   @media (max-width: 620px) {
@@ -2346,4 +2346,3 @@ textarea:focus-visible {
       font-size: 7px;
     }
   }
-}

@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { createHmac } = require('node:crypto');
+const fs = require('node:fs');
 const { DatabaseSync } = require('node:sqlite');
 const { mkdtemp, rm, symlink, writeFile } = require('node:fs/promises');
 const os = require('node:os');
@@ -35,6 +36,8 @@ const { createProjectArchive } = require('../.test-build/lib/builder/archive.js'
 const { runProjectGeneration } = require('../.test-build/lib/builder/runner.js');
 const { runSandboxCheck } = require('../.test-build/lib/builder/sandbox.js');
 const { gunzipSync } = require('node:zlib');
+const { isActiveTaskStatus } = require('../.test-build/lib/agent/types.js');
+const postcss = require('postcss');
 const storageModule = require('../.test-build/lib/builder/cloudflare-storage.js');
 
 const database = new DatabaseSync(':memory:');
@@ -267,6 +270,26 @@ test('task state transitions reject invalid moves and support approval and cance
   assert.equal(cancelTask(cancelled.id, ownerB), undefined);
 });
 
+test('approved tasks remain active until execution reaches a terminal status', () => {
+  assert.equal(isActiveTaskStatus('planning'), true);
+  assert.equal(isActiveTaskStatus('awaiting_approval'), true);
+  assert.equal(isActiveTaskStatus('executing'), true);
+  assert.equal(isActiveTaskStatus('completed'), false);
+  assert.equal(isActiveTaskStatus('failed'), false);
+  assert.equal(isActiveTaskStatus('cancelled'), false);
+});
+
+test('builder styles apply normally while reduced-motion rules only disable motion', () => {
+  const css = postcss.parse(fs.readFileSync(path.join(process.cwd(), 'app/globals.css'), 'utf8'));
+  const builderStyles = css.nodes.find((node) => node.type === 'rule' && node.selector === '.builder-shell');
+  const reducedMotion = css.nodes.find((node) => node.type === 'atrule' && node.name === 'media' &&
+    node.params.includes('prefers-reduced-motion'));
+  assert.ok(builderStyles);
+  assert.ok(reducedMotion);
+  assert.equal(reducedMotion.nodes.some((node) => node.type === 'rule' && node.selector.includes('.builder-')), false);
+  assert.equal(reducedMotion.nodes.some((node) => node.type === 'rule' && node.selector.startsWith('*')), true);
+});
+
 test('process-local task rate limiter rejects bursts and expires old requests', () => {
   const key = `rate-test-${Date.now()}`;
   for (let index = 0; index < 20; index += 1) {
@@ -359,10 +382,12 @@ test('project metadata, files, tasks, and rollback snapshots survive fresh stora
       ...generatedProject,
       files: [{ path: 'src/index.ts', content: 'durable update\n' }],
     }, ownerA);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM project_backups WHERE project_id = ?').get(project.id).count, 1);
     const afterUpdateRestart = freshProjectStore();
     assert.match(await afterUpdateRestart.readProjectFile(project.id, 'src/index.ts', ownerA), /durable update/);
     await afterUpdateRestart.rollbackProject(project.id, ownerA);
     assert.equal(await freshProjectStore().readProjectFile(project.id, 'src/index.ts', ownerA), generatedProject.files[0].content);
+    assert.equal(database.prepare('SELECT COUNT(*) AS count FROM project_backups WHERE project_id = ?').get(project.id).count, 0);
 
     const interrupted = await createProjectTask('Interrupted generation', ownerA);
     const expiredTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
@@ -428,6 +453,45 @@ test('project generation uses the configured provider, reports failure, and supp
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    resetProjectStorage();
+  }
+});
+
+test('cancellation cannot mark a task cancelled after its atomic commit begins', async () => {
+  resetProjectStorage();
+  const project = await createProject(generatedProject, ownerA);
+  const task = await createProjectTask('Update the project', ownerA, 'repair', project.id);
+  const updatedProject = {
+    ...generatedProject,
+    files: [{ path: 'src/index.ts', content: 'committing update\n' }],
+  };
+  const originalPut = projectBindings.TINAN_PROJECT_FILES.put;
+  let releaseWrite;
+  let notifyWriteStarted;
+  const writeStarted = new Promise((resolve) => { notifyWriteStarted = resolve; });
+  const writeGate = new Promise((resolve) => { releaseWrite = resolve; });
+  projectBindings.TINAN_PROJECT_FILES.put = async (key, value) => {
+    if (value === 'committing update\n') {
+      notifyWriteStarted();
+      await writeGate;
+    }
+    return originalPut(key, value);
+  };
+  try {
+    const pending = runProjectGeneration(task, async () => updatedProject);
+    await writeStarted;
+    assert.equal(task.status, 'committing');
+    assert.equal(
+      (await require('../.test-build/lib/builder/project-store.js').cancelProjectTask(task.id, ownerA)).status,
+      'committing',
+    );
+    releaseWrite();
+    await pending;
+    assert.equal(task.status, 'completed');
+    assert.equal(await readProjectFile(project.id, 'src/index.ts', ownerA), 'committing update\n');
+  } finally {
+    releaseWrite();
+    projectBindings.TINAN_PROJECT_FILES.put = originalPut;
     resetProjectStorage();
   }
 });

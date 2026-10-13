@@ -33,7 +33,7 @@ export type ProjectTask = {
   projectId: string | null;
   requirements: string;
   check: string | null;
-  status: 'generating' | 'completed' | 'failed' | 'cancelled';
+  status: 'generating' | 'committing' | 'completed' | 'failed' | 'cancelled';
   progress: string[];
   errors: string[];
   createdAt: string;
@@ -155,13 +155,14 @@ export async function getProjectTask(id: string, ownerId: string): Promise<Proje
   try {
     const task = JSON.parse(row.record_json) as ProjectTask;
     if (task.id !== id || task.ownerId !== ownerId) return undefined;
-    if (task.status === 'generating' && Date.parse(task.updatedAt) < Date.now() - 15 * 60 * 1000) {
+    if (['generating', 'committing'].includes(task.status) &&
+        Date.parse(task.updatedAt) < Date.now() - 15 * 60 * 1000) {
       task.status = 'failed';
       task.progress.push('Task was marked failed after its Worker execution did not resume.');
       task.errors.push('Task execution was interrupted by a Worker restart or timeout.');
       task.updatedAt = new Date().toISOString();
       await TINAN_DB.prepare(
-        "UPDATE project_tasks SET record_json = ?, status = 'failed', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
+        "UPDATE project_tasks SET record_json = ?, status = 'failed', updated_at = ? WHERE id = ? AND owner_id = ? AND status IN ('generating', 'committing')",
       ).bind(JSON.stringify(task), task.updatedAt, id, ownerId).run();
     }
     return task;
@@ -229,7 +230,7 @@ export async function updateProjectTask(
   message: string,
 ): Promise<void> {
   const stored = await getProjectTask(task.id, task.ownerId);
-  if (!stored || stored.status !== 'generating') {
+  if (!stored || (stored.status !== 'generating' && stored.status !== 'committing')) {
     if (stored) Object.assign(task, stored);
     return;
   }
@@ -243,7 +244,7 @@ export async function updateProjectTask(
   };
   const { TINAN_DB } = await getProjectStorageBindings();
   const result = await TINAN_DB.prepare(
-    "UPDATE project_tasks SET project_id = ?, record_json = ?, status = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
+    "UPDATE project_tasks SET project_id = ?, record_json = ?, status = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status IN ('generating', 'committing')",
   ).bind(next.projectId, JSON.stringify(next), status, next.updatedAt, task.id, task.ownerId).run();
   if (!result.meta?.changes) {
     const current = await getProjectTask(task.id, task.ownerId);
@@ -252,6 +253,31 @@ export async function updateProjectTask(
   }
   Object.assign(task, next);
   if (status !== 'generating') runtime().controllers.delete(task.id);
+}
+
+export async function beginProjectTaskCommit(task: ProjectTask, message: string): Promise<boolean> {
+  const stored = await getProjectTask(task.id, task.ownerId);
+  if (!stored || stored.status !== 'generating') {
+    if (stored) Object.assign(task, stored);
+    return false;
+  }
+  const next: ProjectTask = {
+    ...stored,
+    status: 'committing',
+    progress: stored.progress.concat(message),
+    updatedAt: new Date().toISOString(),
+  };
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    "UPDATE project_tasks SET record_json = ?, status = 'committing', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
+  ).bind(JSON.stringify(next), next.updatedAt, task.id, task.ownerId).run();
+  if (!result.meta?.changes) {
+    const current = await getProjectTask(task.id, task.ownerId);
+    if (current) Object.assign(task, current);
+    return false;
+  }
+  Object.assign(task, next);
+  return true;
 }
 
 export async function cancelProjectTask(id: string, ownerId: string): Promise<ProjectTask | undefined> {
@@ -415,6 +441,31 @@ async function createSnapshot(record: ProjectRecord): Promise<string> {
   }
 }
 
+async function deleteSnapshotIfUnreferenced(id: string, ownerId: string, snapshotId: string): Promise<void> {
+  const { TINAN_DB, TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const reference = await TINAN_DB.prepare(
+    'SELECT 1 FROM projects WHERE id = ? AND owner_id = ? AND rollback_snapshot_id = ?',
+  ).bind(id, ownerId, snapshotId).first();
+  if (reference) return;
+  const backup = await TINAN_DB.prepare(
+    'SELECT files_json FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
+  ).bind(id, ownerId, snapshotId).first<BackupRow>();
+  if (!backup) return;
+  let files: string[];
+  try {
+    files = (JSON.parse(backup.files_json) as unknown[]).map((entry) => {
+      if (typeof entry !== 'string') throw new Error('Invalid snapshot file list.');
+      return validateRelativeProjectPath(entry);
+    });
+  } catch {
+    return;
+  }
+  await TINAN_PROJECT_FILES.delete(files.map((relative) => snapshotKey(ownerId, id, snapshotId, relative)));
+  await TINAN_DB.prepare(
+    'DELETE FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
+  ).bind(id, ownerId, snapshotId).run();
+}
+
 export async function snapshotProject(id: string, ownerId: string): Promise<void> {
   const record = await getProjectForOwner(id, ownerId);
   if (!record) throw new Error('Project not found.');
@@ -482,6 +533,10 @@ export async function writeGeneratedFiles(
   const record = await getProjectForOwner(id, ownerId);
   if (!record) throw new Error('Project not found.');
   const { TINAN_DB, TINAN_PROJECT_FILES } = await getProjectStorageBindings();
+  const current = await TINAN_DB.prepare(
+    'SELECT rollback_snapshot_id FROM projects WHERE id = ? AND owner_id = ?',
+  ).bind(id, ownerId).first<{ rollback_snapshot_id: string | null }>();
+  const supersededSnapshotId = current?.rollback_snapshot_id;
   const previous = new Map<string, string>();
   for (const relative of record.files) previous.set(relative, await readProjectFile(id, relative, ownerId));
   const resultingFiles = Array.from(new Set(record.files.concat(files.map((file) => file.path))));
@@ -522,7 +577,6 @@ export async function writeGeneratedFiles(
       'UPDATE projects SET record_json = ?, rollback_snapshot_id = ?, updated_at = ? WHERE id = ? AND owner_id = ?',
     ).bind(JSON.stringify(record), snapshotId, record.updatedAt, id, ownerId).run();
     if (!result.meta?.changes) throw new Error('Project not found.');
-    return record;
   } catch (error) {
     for (const relative of saved) {
       if (previous.has(relative)) {
@@ -537,6 +591,14 @@ export async function writeGeneratedFiles(
     await TINAN_PROJECT_FILES.delete(record.files.map((relative) => snapshotKey(ownerId, id, snapshotId, relative)));
     throw error;
   }
+  if (supersededSnapshotId && supersededSnapshotId !== snapshotId) {
+    try {
+      await deleteSnapshotIfUnreferenced(id, ownerId, supersededSnapshotId);
+    } catch {
+      // Retain any leftover backup metadata if object cleanup fails.
+    }
+  }
+  return record;
 }
 
 export async function recordProjectCheck(

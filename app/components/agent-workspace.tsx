@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { isActiveTaskStatus } from '@/lib/agent/types';
 
 type PlanStep = {
   id: string;
@@ -72,7 +73,7 @@ export default function AgentWorkspace() {
   }, []);
 
   useEffect(() => {
-    const activeTasks = tasks.filter((task) => task.status === 'planning' || task.status === 'executing');
+    const activeTasks = tasks.filter((task) => isActiveTaskStatus(task.status));
     if (activeTasks.length === 0) return;
     const timer = window.setInterval(() => {
       activeTasks.forEach(async (task) => {
@@ -357,7 +358,7 @@ function TaskPlanCard({ task, onRespond }: {
           <button type="button" onClick={() => onRespond(task.id, 'approval', false)}>Decline</button>
         </div>
       )}
-      {(task.status === 'planning' || task.status === 'executing') && (
+      {isActiveTaskStatus(task.status) && (
         <button className="cancel-task" type="button" onClick={() => onRespond(task.id, 'cancel')}>Cancel task</button>
       )}
       {task.errors.map((message, index) => <div className="task-error" key={`${task.id}-error-${index}`}>{message}</div>)}

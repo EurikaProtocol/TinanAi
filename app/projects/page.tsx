@@ -28,7 +28,7 @@ type Project = {
 type BuilderTask = {
   id: string;
   projectId: string | null;
-  status: 'generating' | 'completed' | 'failed' | 'cancelled';
+  status: 'generating' | 'committing' | 'completed' | 'failed' | 'cancelled';
   progress: string[];
   errors: string[];
   kind: 'generation' | 'repair' | 'check';
@@ -71,7 +71,7 @@ export default function ProjectsPage() {
       if (!response.ok) throw new Error(payload.error || 'Could not update task status.');
       const updated = payload.task as BuilderTask;
       setTask(updated);
-      if (updated.status !== 'generating') {
+      if (updated.status !== 'generating' && updated.status !== 'committing') {
         await refreshProjects();
         if (updated.kind === 'generation' && updated.status === 'completed' && updated.projectId) {
           setSelectedId(updated.projectId);
@@ -83,7 +83,7 @@ export default function ProjectsPage() {
   }, [refreshProjects]);
 
   useEffect(() => {
-    if (!task || task.status !== 'generating') return;
+    if (!task || (task.status !== 'generating' && task.status !== 'committing')) return;
     const timer = window.setInterval(() => void refreshTask(task.id), 1000);
     return () => window.clearInterval(timer);
   }, [task, refreshTask]);
@@ -226,7 +226,7 @@ export default function ProjectsPage() {
             />
             <div className="requirements-footer">
               <span>Up to 8,000 characters · Model output is validated before writing.</span>
-              <button className="builder-submit" disabled={!requirements.trim() || isSubmitting || task?.status === 'generating'} type="submit">
+              <button className="builder-submit" disabled={!requirements.trim() || isSubmitting || task?.status === 'generating' || task?.status === 'committing'} type="submit">
                 {isSubmitting ? 'Starting…' : selectedId ? 'Generate changes' : 'Generate project'} <span>↗</span>
               </button>
             </div>
