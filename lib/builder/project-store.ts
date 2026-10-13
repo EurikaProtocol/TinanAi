@@ -13,15 +13,23 @@ export type ProjectRecord = {
   files: string[];
   createdAt: string;
   updatedAt: string;
-  latestDiff: { path: string; added: number; removed: number }[];
+  latestDiff: { path: string; added: number; removed: number; patch: string }[];
   logs: { message: string; timestamp: string }[];
   checks: { check: string; status: 'passed' | 'failed' | 'unavailable' | 'cancelled'; output: string; timestamp: string }[];
   previewStatus: 'not_started';
+  deploymentDraft: {
+    status: 'draft';
+    target: null;
+    buildCommand: 'npm run build';
+    automaticDeployment: false;
+    requiresManualApproval: true;
+  };
+  repairAttempts: number;
 };
 
 export type ProjectTask = {
   id: string;
-  kind: 'generation' | 'check';
+  kind: 'generation' | 'repair' | 'check';
   projectId: string | null;
   requirements: string;
   check: string | null;
@@ -36,6 +44,8 @@ type BuilderRuntime = {
   tasks: Map<string, ProjectTask>;
   controllers: Map<string, AbortController>;
   backups: Map<string, Map<string, string>>;
+  lockedProjects: Set<string>;
+  repairReservations: Set<string>;
 };
 
 const globalBuilder = globalThis as typeof globalThis & { tinanBuilderRuntime?: BuilderRuntime };
@@ -44,7 +54,13 @@ const forbiddenPart = /^(?:\.|\.git|\.next|node_modules|\.tinan-.*|\.env(?:\..*)
 
 function state(): BuilderRuntime {
   if (!globalBuilder.tinanBuilderRuntime) {
-    globalBuilder.tinanBuilderRuntime = { tasks: new Map(), controllers: new Map(), backups: new Map() };
+    globalBuilder.tinanBuilderRuntime = {
+      tasks: new Map(),
+      controllers: new Map(),
+      backups: new Map(),
+      lockedProjects: new Set(),
+      repairReservations: new Set(),
+    };
   }
   return globalBuilder.tinanBuilderRuntime;
 }
@@ -83,6 +99,50 @@ export function getProjectTask(id: string): ProjectTask | undefined {
   return state().tasks.get(id);
 }
 
+export function countRunningChecks(): number {
+  return Array.from(state().tasks.values()).filter((task) =>
+    task.kind === 'check' && task.status === 'generating',
+  ).length;
+}
+
+export function acquireProjectLock(id: string): boolean {
+  const locks = state().lockedProjects;
+  if (locks.has(id)) return false;
+  locks.add(id);
+  return true;
+}
+
+export function releaseProjectLock(id: string): void {
+  state().lockedProjects.delete(id);
+}
+
+export async function reserveProjectRepair(id: string): Promise<ProjectRecord> {
+  const reservations = state().repairReservations;
+  if (reservations.has(id)) throw new Error('A repair attempt is already in progress.');
+  reservations.add(id);
+  try {
+    const root = await ensureRoot();
+    const directory = projectDirectory(root, id);
+    const record = await getProject(id);
+    if (!record) throw new Error('Project not found.');
+    if (record.repairAttempts >= 1) throw new Error('The single bounded AI repair attempt has already been used.');
+    if (record.checks[0]?.status !== 'failed') throw new Error('Run a failed sandbox check before requesting a repair.');
+    record.repairAttempts += 1;
+    record.logs.unshift({ message: 'User authorized the project’s single bounded AI repair attempt.', timestamp: new Date().toISOString() });
+    record.logs = record.logs.slice(0, 30);
+    record.updatedAt = new Date().toISOString();
+    await writeRecord(directory, record);
+    return record;
+  } catch (error) {
+    reservations.delete(id);
+    throw error;
+  }
+}
+
+export function releaseProjectRepair(id: string): void {
+  state().repairReservations.delete(id);
+}
+
 export function getProjectTaskSignal(id: string): AbortSignal | undefined {
   return state().controllers.get(id)?.signal;
 }
@@ -116,7 +176,8 @@ export function validateRelativeProjectPath(input: string): string {
   const parts = normalized.split('/');
   if (!normalized || normalized.length > 240 || normalized.startsWith('/') ||
       parts.some((part) => !part || part === '.' || part === '..' || forbiddenPart.test(part)) ||
-      /[\0<>:"|?*]/.test(normalized) || /\.(?:pem|key|p12|pfx)$/i.test(normalized)) {
+      /[\0<>:"|?*]/.test(normalized) || /\.(?:pem|key|p12|pfx)$/i.test(normalized) ||
+      normalized.toLowerCase() === 'deployment.config.json') {
     throw new Error('Project file path is not permitted.');
   }
   return normalized;
@@ -138,11 +199,22 @@ function projectDirectory(root: string, id: string): string {
 async function readRecord(directory: string): Promise<ProjectRecord> {
   const metadataPath = path.join(directory, metadataName);
   const stat = await fs.lstat(metadataPath);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('Project metadata is invalid.');
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('Project metadata is invalid.');
   const record = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as ProjectRecord;
   if (!record || !/^[0-9a-f-]{36}$/i.test(record.id) || !Array.isArray(record.files)) {
     throw new Error('Project metadata is invalid.');
   }
+  record.latestDiff ??= [];
+  record.logs ??= [];
+  record.checks ??= [];
+  record.repairAttempts ??= 0;
+  record.deploymentDraft ??= {
+    status: 'draft',
+    target: null,
+    buildCommand: 'npm run build',
+    automaticDeployment: false,
+    requiresManualApproval: true,
+  };
   return record;
 }
 
@@ -172,6 +244,7 @@ async function safeFile(directory: string, relative: string): Promise<string> {
 }
 
 export async function createProject(generated: GeneratedProject): Promise<ProjectRecord> {
+  if ((await listProjects()).length >= 100) throw new Error('Project storage limit reached (100 projects).');
   const root = await ensureRoot();
   const id = randomUUID();
   const directory = projectDirectory(root, id);
@@ -200,10 +273,19 @@ export async function createProject(generated: GeneratedProject): Promise<Projec
         path: file.path,
         added: file.content.split('\n').length,
         removed: 0,
+        patch: unifiedDiff(file.path, '', file.content),
       })),
       logs: [{ message: 'Generated source files in a new isolated project workspace.', timestamp }],
       checks: [],
       previewStatus: 'not_started',
+      deploymentDraft: {
+        status: 'draft',
+        target: null,
+        buildCommand: 'npm run build',
+        automaticDeployment: false,
+        requiresManualApproval: true,
+      },
+      repairAttempts: 0,
     };
     await writeRecord(directory, record);
     return record;
@@ -225,7 +307,7 @@ export async function listProjects(): Promise<ProjectRecord[]> {
       continue;
     }
   }
-  return projects.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  return projects.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 50);
 }
 
 export async function getProject(id: string): Promise<ProjectRecord | undefined> {
@@ -258,6 +340,10 @@ export async function exportProjectFiles(id: string): Promise<{ name: string; fi
     path: relative,
     content: Buffer.from(await readProjectFile(id, relative), 'utf8'),
   })));
+  files.push({
+    path: 'deployment.config.json',
+    content: Buffer.from(JSON.stringify(record.deploymentDraft, null, 2), 'utf8'),
+  });
   return { name: record.name, files };
 }
 
@@ -293,7 +379,7 @@ export async function rollbackProject(id: string): Promise<ProjectRecord> {
     await fs.rm(file, { force: true });
   }
   const files: string[] = [];
-  for (const [relative, content] of backup) {
+  for (const [relative, content] of Array.from(backup.entries())) {
     const file = await safeFile(directory, relative);
     await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
     await fs.writeFile(file, content, { flag: 'wx', mode: 0o600 });
@@ -334,10 +420,23 @@ export async function writeGeneratedFiles(id: string, generated: GeneratedProjec
         path: relative,
         added: newLines.filter((line) => !oldLines.includes(line)).length,
         removed: oldLines.filter((line) => !newLines.includes(line)).length,
+        patch: unifiedDiff(relative, oldContent, entry.content),
       });
     }
+    const resultingFiles = new Set(record.files.concat(
+      generated.files.map((entry) => validateRelativeProjectPath(entry.path)),
+    ));
+    const resultingBytes = Array.from(resultingFiles).reduce((sum, file) => {
+      const next = generated.files.find((entry) => entry.path === file);
+      return sum + Buffer.byteLength(next?.content ?? previous.get(file) ?? '', 'utf8');
+    }, 0);
+    if (resultingFiles.size > 24 || resultingBytes > 256 * 1024) {
+      throw new Error('Project workspace limit reached (24 files or 256 KiB of source).');
+    }
 
-    record.files = [...new Set([...record.files, ...generated.files.map((entry) => validateRelativeProjectPath(entry.path))])];
+    record.files = Array.from(new Set(record.files.concat(
+      generated.files.map((entry) => validateRelativeProjectPath(entry.path)),
+    )));
     record.specification = generated.specification;
     record.technology = generated.technology;
     record.tasks = generated.tasks;
@@ -351,7 +450,7 @@ export async function writeGeneratedFiles(id: string, generated: GeneratedProjec
       const file = await safeFile(directory, relative);
       await fs.rm(file, { force: true });
     }
-    for (const [relative, content] of previous) {
+    for (const [relative, content] of Array.from(previous.entries())) {
       const file = await safeFile(directory, relative);
       await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
       await fs.writeFile(file, content, { mode: 0o600 });
@@ -377,12 +476,37 @@ export async function recordProjectCheck(
     output: output.slice(0, 12000),
     timestamp: new Date().toISOString(),
   });
-  record.checks = record.checks.slice(0, 20);
+  record.checks = record.checks.slice(0, 10);
   record.logs.unshift({
     message: `${check} sandbox check: ${status}.`,
     timestamp: new Date().toISOString(),
   });
-  record.logs = record.logs.slice(0, 50);
+  record.logs = record.logs.slice(0, 30);
   record.updatedAt = new Date().toISOString();
   await writeRecord(directory, record);
+}
+
+function unifiedDiff(filePath: string, oldContent: string, newContent: string): string {
+  const oldLines = oldContent.replace(/\n$/, '').split('\n');
+  const newLines = newContent.replace(/\n$/, '').split('\n');
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
+  let suffix = 0;
+  while (suffix < oldLines.length - prefix && suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) suffix += 1;
+
+  const contextStart = Math.max(0, prefix - 2);
+  const contextEndOld = Math.min(oldLines.length, oldLines.length - suffix + 2);
+  const contextEndNew = Math.min(newLines.length, newLines.length - suffix + 2);
+  const output = [
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    `@@ -${contextStart + 1},${contextEndOld - contextStart} +${contextStart + 1},${contextEndNew - contextStart} @@`,
+    ...oldLines.slice(contextStart, prefix).map((line) => ` ${line}`),
+    ...oldLines.slice(prefix, oldLines.length - suffix).map((line) => `-${line}`),
+    ...newLines.slice(prefix, newLines.length - suffix).map((line) => `+${line}`),
+    ...oldLines.slice(oldLines.length - suffix, contextEndOld).map((line) => ` ${line}`),
+  ];
+  const patch = output.join('\n');
+  return patch.length > 4000 ? `${patch.slice(0, 4000)}\n… diff truncated` : patch;
 }

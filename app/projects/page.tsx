@@ -10,10 +10,18 @@ type Project = {
   technology: string[];
   tasks: string[];
   files: string[];
-  latestDiff: { path: string; added: number; removed: number }[];
+  latestDiff: { path: string; added: number; removed: number; patch: string }[];
   logs: { message: string; timestamp: string }[];
   checks: { check: string; status: string; output: string; timestamp: string }[];
   previewStatus: string;
+  repairAttempts: number;
+  deploymentDraft: {
+    status: string;
+    target: string | null;
+    buildCommand: string;
+    automaticDeployment: boolean;
+    requiresManualApproval: boolean;
+  };
   updatedAt: string;
 };
 
@@ -23,7 +31,7 @@ type BuilderTask = {
   status: 'generating' | 'completed' | 'failed' | 'cancelled';
   progress: string[];
   errors: string[];
-  kind: 'generation' | 'check';
+  kind: 'generation' | 'repair' | 'check';
   check: string | null;
 };
 
@@ -63,7 +71,12 @@ export default function ProjectsPage() {
       if (!response.ok) throw new Error(payload.error || 'Could not update task status.');
       const updated = payload.task as BuilderTask;
       setTask(updated);
-      if (updated.status !== 'generating') await refreshProjects();
+      if (updated.status !== 'generating') {
+        await refreshProjects();
+        if (updated.kind === 'generation' && updated.status === 'completed' && updated.projectId) {
+          setSelectedId(updated.projectId);
+        }
+      }
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : 'Could not update task status.');
     }
@@ -153,6 +166,18 @@ export default function ProjectsPage() {
     setProjects((current) => current.map((project) => project.id === selectedId ? payload.project : project));
   }
 
+  async function requestRepair() {
+    if (!selectedId) return;
+    try {
+      const response = await fetch(`/api/projects/${encodeURIComponent(selectedId)}/repair`, { method: 'POST' });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Repair could not start.');
+      setTask(payload.task as BuilderTask);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : 'Repair could not start.');
+    }
+  }
+
   return (
     <main className="builder-shell">
       <header className="builder-topbar">
@@ -222,6 +247,7 @@ export default function ProjectsPage() {
               onOpenFile={openFile}
               onRollback={rollback}
               onRunCheck={runCheck}
+              onRequestRepair={requestRepair}
               project={selectedProject}
               selectedFile={selectedFile}
               fileContent={fileContent}
@@ -247,6 +273,7 @@ function ProjectWorkspace({
   fileContent,
   onOpenFile,
   onRunCheck,
+  onRequestRepair,
   onRollback,
 }: {
   project: Project;
@@ -254,6 +281,7 @@ function ProjectWorkspace({
   fileContent: string;
   onOpenFile: (file: string) => void;
   onRunCheck: (check: string) => void;
+  onRequestRepair: () => void;
   onRollback: () => void;
 }) {
   return (
@@ -279,7 +307,10 @@ function ProjectWorkspace({
       <section className="diff-panel">
         <div className="inspector-heading"><strong>GENERATED CHANGES</strong><span>{project.latestDiff.length} files</span></div>
         {project.latestDiff.length ? project.latestDiff.map((diff) => (
-          <div className="diff-row" key={diff.path}><code>{diff.path}</code><span className="diff-added">+{diff.added}</span><span className="diff-removed">−{diff.removed}</span><span>lines</span></div>
+          <details className="diff-details" key={diff.path}>
+            <summary className="diff-row"><code>{diff.path}</code><span className="diff-added">+{diff.added}</span><span className="diff-removed">−{diff.removed}</span><span>lines</span></summary>
+            <pre>{diff.patch}</pre>
+          </details>
         )) : <p className="no-diff">No generated changes recorded yet.</p>}
       </section>
 
@@ -292,11 +323,21 @@ function ProjectWorkspace({
             <pre>{check.output || 'No output.'}</pre>
           </details>
         )) : <p className="no-diff">Checks require Docker plus a pre-pulled digest-pinned sandbox image. No preview or build is claimed.</p>}
+        {project.checks[0]?.status === 'failed' && project.repairAttempts < 1 && (
+          <button className="repair-button" type="button" onClick={onRequestRepair}>Attempt one AI repair</button>
+        )}
+        {project.repairAttempts > 0 && <p className="no-diff">AI repair budget used: {project.repairAttempts}/1.</p>}
       </section>
 
       <section className="logs-panel">
         <div className="inspector-heading"><strong>TASK LOG</strong><span>Recent events</span></div>
         {project.logs.map((log, index) => <p key={`${log.timestamp}-${index}`}><time>{new Date(log.timestamp).toLocaleTimeString()}</time>{log.message}</p>)}
+      </section>
+
+      <section className="deployment-panel">
+        <div className="inspector-heading"><strong>DEPLOYMENT CONFIGURATION DRAFT</strong><span>Not deployed</span></div>
+        <pre>{JSON.stringify(project.deploymentDraft, null, 2)}</pre>
+        <p>Choose a hosting target and review environment requirements before any deployment. This draft performs no deployment.</p>
       </section>
     </section>
   );

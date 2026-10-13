@@ -12,7 +12,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  if (!allowRequest('project-builder-global')) {
+  if (!allowRequest('project-builder-global', Date.now(), 5)) {
     return NextResponse.json({ error: 'Too many project requests. Try again in a minute.' }, { status: 429 });
   }
   const length = Number(request.headers.get('content-length') || 0);

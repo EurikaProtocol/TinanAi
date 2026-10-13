@@ -6,6 +6,7 @@ const test = require('node:test');
 const { createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
 const {
   createModelPlan,
+  generateProject,
   getOpenAICompatibleConfig,
   getProviderMode,
   ProviderError,
@@ -17,7 +18,9 @@ const {
   createProject,
   createProjectTask,
   getProject,
+  recordProjectCheck,
   readProjectFile,
+  reserveProjectRepair,
   rollbackProject,
   validateRelativeProjectPath,
   writeGeneratedFiles,
@@ -71,6 +74,25 @@ test('provider returns a validated structured plan without exposing credentials'
   assert.equal(result.steps[0].tool.name, 'project.info');
   assert.equal(sentAuthorization, 'Bearer ' + validEnv.TINAN_AI_API_KEY);
   assert.equal(JSON.stringify(result).includes(validEnv.TINAN_AI_API_KEY), false);
+});
+
+test('project provider generates a validated specification, task plan, technology selection, and source tree', async () => {
+  let requestBody;
+  const generated = await generateProject(
+    'Build a tiny greeting app',
+    undefined,
+    validEnv,
+    async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(generatedProject) } }],
+      }), { status: 200 });
+    },
+  );
+  assert.equal(requestBody.model, validEnv.TINAN_AI_MODEL);
+  assert.match(requestBody.messages[1].content, /greeting app/);
+  assert.equal(generated.name, generatedProject.name);
+  assert.deepEqual(generated.files, generatedProject.files);
 });
 
 test('provider failures and invalid provider plans fail closed', async () => {
@@ -246,6 +268,19 @@ test('project generation uses the configured provider, reports failure, and supp
     assert.equal(failed.status, 'failed');
     assert.match(failed.errors[0], /Provider unavailable/);
 
+    const repairProject = await createProject(generatedProject);
+    await recordProjectCheck(repairProject.id, 'build', 'failed', 'Build failed.');
+    const reserved = await reserveProjectRepair(repairProject.id);
+    assert.equal(reserved.repairAttempts, 1);
+    const repair = createProjectTask('Repair one failed build.', 'repair', repairProject.id);
+    await runProjectGeneration(repair, async () => ({
+      ...generatedProject,
+      files: [{ path: 'src/index.ts', content: 'export const greeting = "repaired";\n' }],
+    }));
+    assert.equal(repair.status, 'completed');
+    assert.match(await readProjectFile(repairProject.id, 'src/index.ts'), /repaired/);
+    await assert.rejects(reserveProjectRepair(repairProject.id), /already been used/);
+
     const cancelled = createProjectTask('cancel generation', 'generation');
     const pending = runProjectGeneration(cancelled, (_requirements, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
@@ -279,5 +314,81 @@ test('sandbox never falls back to host commands when Docker image is not digest-
   } finally {
     if (previousImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
     else process.env.TINAN_SANDBOX_IMAGE = previousImage;
+  }
+});
+
+test('sandbox uses only fixed checks inside a network-isolated container and reports failed builds', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-sandbox-test-'));
+  const oldRoot = process.env.TINAN_PROJECTS_DIR;
+  const oldImage = process.env.TINAN_SANDBOX_IMAGE;
+  process.env.TINAN_PROJECTS_DIR = root;
+  process.env.TINAN_SANDBOX_IMAGE = `node:22-alpine@sha256:${'a'.repeat(64)}`;
+  try {
+    const project = await createProject(generatedProject);
+    const task = createProjectTask('', 'check', project.id, 'build');
+    let invocation;
+    const result = await runSandboxCheck(project.id, task, 'build', new AbortController().signal, (command, args, options) => {
+      invocation = { command, args, options };
+      const child = new (require('node:events').EventEmitter)();
+      child.stdout = new (require('node:events').EventEmitter)();
+      child.stderr = new (require('node:events').EventEmitter)();
+      child.kill = () => true;
+      process.nextTick(() => {
+        child.stderr.emit('data', Buffer.from('Build dependency missing.'));
+        child.emit('close', 2, null);
+      });
+      return child;
+    });
+    assert.equal(result.status, 'failed');
+    assert.match(result.output, /Build dependency missing/);
+    assert.equal(invocation.command, 'docker');
+    assert.equal(invocation.options.shell, false);
+    assert.ok(invocation.args.includes('--network=none'));
+    assert.deepEqual(invocation.args.slice(-3), ['npm', 'run', 'build']);
+  } finally {
+    if (oldRoot === undefined) delete process.env.TINAN_PROJECTS_DIR;
+    else process.env.TINAN_PROJECTS_DIR = oldRoot;
+    if (oldImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
+    else process.env.TINAN_SANDBOX_IMAGE = oldImage;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('sandbox cancellation terminates the check and reports cancellation', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'tinan-sandbox-cancel-'));
+  const oldRoot = process.env.TINAN_PROJECTS_DIR;
+  const oldImage = process.env.TINAN_SANDBOX_IMAGE;
+  process.env.TINAN_PROJECTS_DIR = root;
+  process.env.TINAN_SANDBOX_IMAGE = `node:22-alpine@sha256:${'b'.repeat(64)}`;
+  try {
+    const project = await createProject(generatedProject);
+    const task = createProjectTask('', 'check', project.id, 'test');
+    const controller = new AbortController();
+    let wasKilled = false;
+    let spawned;
+    const spawnedPromise = new Promise((resolve) => { spawned = resolve; });
+    const pending = runSandboxCheck(project.id, task, 'test', controller.signal, () => {
+      const child = new (require('node:events').EventEmitter)();
+      child.stdout = new (require('node:events').EventEmitter)();
+      child.stderr = new (require('node:events').EventEmitter)();
+      spawned();
+      child.kill = () => {
+        wasKilled = true;
+        process.nextTick(() => child.emit('close', null, 'SIGTERM'));
+        return true;
+      };
+      return child;
+    });
+    await spawnedPromise;
+    controller.abort();
+    const result = await pending;
+    assert.equal(wasKilled, true);
+    assert.equal(result.status, 'cancelled');
+  } finally {
+    if (oldRoot === undefined) delete process.env.TINAN_PROJECTS_DIR;
+    else process.env.TINAN_PROJECTS_DIR = oldRoot;
+    if (oldImage === undefined) delete process.env.TINAN_SANDBOX_IMAGE;
+    else process.env.TINAN_SANDBOX_IMAGE = oldImage;
+    await rm(root, { recursive: true, force: true });
   }
 });

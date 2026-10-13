@@ -1586,6 +1586,33 @@ textarea:focus-visible {
     background: rgba(17, 23, 21, 0.92);
   }
 
+  .deployment-panel {
+    overflow: hidden;
+    padding: 10px 12px;
+    border: 1px solid #354332;
+    border-radius: 8px;
+    background: #151d18;
+  }
+
+  .deployment-panel > pre {
+    overflow: auto;
+    margin: 8px 0 5px;
+    padding: 8px;
+    border: 1px solid #29352e;
+    border-radius: 4px;
+    background: #101613;
+    color: #b5c7b8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 8px;
+  }
+
+  .deployment-panel > p {
+    margin: 0;
+    color: #7c8d81;
+    font-size: 8px;
+    line-height: 1.6;
+  }
+
   .project-sidebar {
     min-height: 500px;
     padding: 13px 10px;
@@ -2075,6 +2102,19 @@ textarea:focus-visible {
     margin-top: 6px;
   }
 
+  .diff-row {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    list-style: none;
+    text-align: left;
+  }
+
+  .diff-row::-webkit-details-marker {
+    display: none;
+  }
+
   .diff-row code {
     overflow: hidden;
     color: #bdc9c0;
@@ -2087,6 +2127,21 @@ textarea:focus-visible {
 
   .diff-removed {
     color: #e19483;
+  }
+
+  .diff-details > pre {
+    overflow: auto;
+    max-height: 280px;
+    margin: 0 0 8px;
+    padding: 8px;
+    border: 1px solid #252f29;
+    border-radius: 4px;
+    background: #0e1311;
+    color: #aebbb1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 8px;
+    line-height: 1.6;
+    white-space: pre-wrap;
   }
 
   .no-diff {
@@ -2111,6 +2166,17 @@ textarea:focus-visible {
     color: #b3d6bd;
     cursor: pointer;
     font-family: monospace;
+    font-size: 8px;
+  }
+
+  .repair-button {
+    margin-top: 8px;
+    padding: 7px 9px;
+    border: 1px solid #4d704f;
+    border-radius: 4px;
+    background: #1e3324;
+    color: #bce4c2;
+    cursor: pointer;
     font-size: 8px;
   }
 

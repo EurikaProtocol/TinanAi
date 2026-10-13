@@ -7,11 +7,12 @@ export function createProjectArchive(files: ArchiveFile[]): Buffer {
   for (const file of files) {
     const name = file.path.replace(/\\/g, '/');
     if (!name || name.startsWith('/') || name.split('/').some((part) => !part || part === '.' || part === '..') ||
-        Buffer.byteLength(name) > 100) {
+        Buffer.byteLength(name) > 255) {
       throw new Error('Cannot export a project with an invalid path.');
     }
+    const { basename, prefix } = splitTarPath(name);
     const header = Buffer.alloc(512);
-    writeString(header, 0, 100, name);
+    writeString(header, 0, 100, basename);
     writeOctal(header, 100, 8, 0o600);
     writeOctal(header, 108, 8, 0);
     writeOctal(header, 116, 8, 0);
@@ -21,6 +22,7 @@ export function createProjectArchive(files: ArchiveFile[]): Buffer {
     header[156] = '0'.charCodeAt(0);
     writeString(header, 257, 6, 'ustar\0');
     writeString(header, 263, 2, '00');
+    if (prefix) writeString(header, 345, 155, prefix);
     const checksum = header.reduce((sum, byte) => sum + byte, 0);
     writeOctal(header, 148, 8, checksum);
     chunks.push(header, file.content);
@@ -29,6 +31,19 @@ export function createProjectArchive(files: ArchiveFile[]): Buffer {
   }
   chunks.push(Buffer.alloc(1024));
   return gzipSync(Buffer.concat(chunks), { level: 6, maxOutputLength: 2 * 1024 * 1024 });
+}
+
+function splitTarPath(name: string): { basename: string; prefix: string } {
+  if (Buffer.byteLength(name) <= 100) return { basename: name, prefix: '' };
+  const parts = name.split('/');
+  for (let index = parts.length - 1; index > 0; index -= 1) {
+    const prefix = parts.slice(0, index).join('/');
+    const basename = parts.slice(index).join('/');
+    if (Buffer.byteLength(prefix) <= 155 && Buffer.byteLength(basename) <= 100) {
+      return { basename, prefix };
+    }
+  }
+  throw new Error('Cannot export a project path longer than the tar format supports.');
 }
 
 function writeString(buffer: Buffer, offset: number, length: number, value: string): void {

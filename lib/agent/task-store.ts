@@ -85,10 +85,10 @@ export function recordApproval(id: string, approved: boolean): AgentTask {
   return task;
 }
 
-export function allowRequest(key: string, now = Date.now()): boolean {
+export function allowRequest(key: string, now = Date.now(), limit = 20): boolean {
   const requests = runtime().requests;
   const recent = (requests.get(key) ?? []).filter((timestamp) => now - timestamp < 60_000);
-  if (recent.length >= 20) {
+  if (recent.length >= limit) {
     requests.set(key, recent);
     return false;
   }
