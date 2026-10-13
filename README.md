@@ -81,6 +81,8 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 
 This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
 
+The Wrangler config declares only `tinaneureka.com` as a Custom Domain; `www.tinaneureka.com` is intentionally not configured. Cloudflare requires the domain to belong to an active zone in the deploying account and will manage the DNS record and certificate when this configuration is deployed. Verify the zone, existing DNS/hosting assignments, and migration plan in the Cloudflare dashboard before any deployment. This change does not perform a deploy or modify DNS.
+
 ### Worker runtime settings
 
 Set the following under the Worker's **Settings → Variables and Secrets** for each environment (production and preview/development separately).

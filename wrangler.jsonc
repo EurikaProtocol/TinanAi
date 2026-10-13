@@ -8,6 +8,12 @@
     "nodejs_compat_populate_process_env",
     "global_fetch_strictly_public"
   ],
+  "routes": [
+    {
+      "pattern": "tinaneureka.com",
+      "custom_domain": true
+    }
+  ],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
