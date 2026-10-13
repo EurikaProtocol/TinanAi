@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict');
+const { createHmac } = require('node:crypto');
 const { mkdtemp, rm, symlink, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -51,9 +52,18 @@ const ownerA = 'a'.repeat(64);
 const ownerB = 'b'.repeat(64);
 
 test('request authentication accepts only middleware-provided opaque owner IDs', () => {
-  assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': ownerA } })), ownerA);
-  assert.equal(getRequestOwnerId(new Request('https://example.test')), null);
-  assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': 'user@example.com' } })), null);
+  const previousPassword = process.env.TINAN_AUTH_PASSWORD;
+  process.env.TINAN_AUTH_PASSWORD = 'phase4-auth-test-password-' + 'x'.repeat(32);
+  const proof = createHmac('sha256', process.env.TINAN_AUTH_PASSWORD).update(ownerA).digest('hex');
+  try {
+    assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': ownerA, 'x-tinan-owner-proof': proof } })), ownerA);
+    assert.equal(getRequestOwnerId(new Request('https://example.test')), null);
+    assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': 'user@example.com', 'x-tinan-owner-proof': proof } })), null);
+    assert.equal(getRequestOwnerId(new Request('https://example.test', { headers: { 'x-tinan-owner-id': ownerA, 'x-tinan-owner-proof': '0'.repeat(64) } })), null);
+  } finally {
+    if (previousPassword === undefined) delete process.env.TINAN_AUTH_PASSWORD;
+    else process.env.TINAN_AUTH_PASSWORD = previousPassword;
+  }
 });
 
 test('demo is the explicit default and provider configuration requires server credentials', () => {
@@ -430,7 +440,7 @@ test('sandbox rejects generated package scripts outside its fixed allowlist', as
       ...generatedProject,
       files: [
         ...generatedProject.files,
-        { path: 'package.json', content: JSON.stringify({ scripts: { build: 'node -e "require(\\'child_process\\').execSync(\\'curl evil\\')"' } }) },
+        { path: 'package.json', content: JSON.stringify({ scripts: { build: 'echo generated command' } }) },
       ],
     }, ownerA);
     const result = await runSandboxCheck(

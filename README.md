@@ -23,7 +23,7 @@ All provider secrets are server-only. Do not prefix these values with `NEXT_PUBL
 | `TINAN_AI_BASE_URL` | No | OpenAI-compatible API base URL; defaults to `https://api.openai.com/v1`. HTTPS is required except for localhost development. |
 | `TINAN_AI_TIMEOUT_MS` | No | Provider timeout from 1,000 to 60,000 ms; defaults to 20,000 ms. |
 | `TINAN_AUTH_USERNAME` | Required | Single-owner Basic Auth username for the application and API. |
-| `TINAN_AUTH_PASSWORD` | Required | Single-owner Basic Auth password; must be at least 20 characters. Set server-side and use HTTPS in production. |
+| `TINAN_AUTH_PASSWORD` | Required | Single-owner Basic Auth password; must be at least 32 characters. Set server-side and use HTTPS in production. |
 | `TINAN_ENABLE_FILE_READING` | No | Must be `true` to allow explicitly authorized workspace file reads. |
 | `TINAN_PROJECTS_DIR` | No | Root directory for isolated generated project workspaces; defaults to the OS temporary directory at `tinan-ai-projects`. |
 | `TINAN_SANDBOX_IMAGE` | For checks | Pre-pulled `node:<tag>@sha256:<64 lowercase hex>` image. Docker runs only fixed npm check commands with network disabled, a read-only container root, resource limits, and the generated project mounted as the only writable workspace. The service never pulls images itself. |
@@ -42,13 +42,49 @@ No real provider credentials were available during implementation, so provider i
 
 ## Persistence and deployment limits
 
-The app and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a 20+ character `TINAN_AUTH_PASSWORD`; requests are challenged before the app runs, unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is recorded with projects/tasks and checked for reads, changes, exports, approvals, and cancellation. Existing workspaces without a valid owner ID are not visible through owner-scoped APIs. This is a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project files and metadata use the configured server filesystem (default OS temporary directory); task queues, cancellation state, and rollback snapshots remain process-local and are lost on restart. There is no database or durable shared storage.
+The app and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; requests are challenged before the app runs, unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is recorded with projects/tasks and checked for reads, changes, exports, approvals, and cancellation. Existing workspaces without a valid owner ID are not visible through owner-scoped APIs. This is a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project files and metadata use the configured server filesystem (default OS temporary directory); task queues, cancellation state, and rollback snapshots remain process-local and are lost on restart. There is no database or durable shared storage.
 
 ## Phase 4 verification status
 
 - Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
 - Docker Engine 28.0.4 is available, but there is no Node image in its local image cache and `TINAN_SANDBOX_IMAGE` is unset. Real sandbox project checks remain blocked; `TINAN_SANDBOX_VERIFIED` is also unset, so execution fails closed even if an image is later provided until an operator verifies isolation.
 - Tests cover mocked provider responses/failures/timeouts, mock-generated website file export, cross-owner resource filtering, traversal rejection, task cancellation, and mocked sandbox command construction/failure. They do not prove live OpenRouter connectivity, a real model-generated project, or real Docker isolation. Database persistence is not implemented.
+
+### Manual OpenRouter website generation test
+
+Only run this after configuring `TINAN_AI_PROVIDER=openai-compatible`, the OpenRouter key as server-side `TINAN_AI_API_KEY`, the exact OpenRouter model ID as `TINAN_AI_MODEL`, `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1`, and the two `TINAN_AUTH_*` values on the application host. The command below makes a real provider request and may incur charges; it does not pass the OpenRouter key to curl. Set `TINAN_AUTH_USERNAME` locally and curl will prompt for the corresponding Basic Auth password.
+
+```bash
+APP_ORIGIN='https://tinaneureka.com'
+TASK_ID=$(curl --fail-with-body --silent --show-error \
+  --user "$TINAN_AUTH_USERNAME" \
+  --header "Origin: $APP_ORIGIN" \
+  --header 'Content-Type: application/json' \
+  --data '{"requirements":"Build a minimal responsive sample services website. Include a homepage, semantic header and navigation, hero section, services section, and footer. Return actual HTML and CSS source files. Do not include shell commands."}' \
+  "$APP_ORIGIN/api/projects" | jq -r '.task.id')
+
+while :; do
+  TASK=$(curl --fail-with-body --silent --show-error \
+    --user "$TINAN_AUTH_USERNAME" \
+    "$APP_ORIGIN/api/projects/tasks/$TASK_ID")
+  STATUS=$(printf '%s' "$TASK" | jq -r '.task.status')
+  [ "$STATUS" != 'generating' ] && break
+  sleep 2
+done
+
+PROJECT_ID=$(printf '%s' "$TASK" | jq -r '.task.projectId')
+test "$STATUS" = 'completed' && test "$PROJECT_ID" != 'null'
+curl --fail-with-body --silent --show-error \
+  --user "$TINAN_AUTH_USERNAME" \
+  "$APP_ORIGIN/api/projects/$PROJECT_ID" | jq '.project.files'
+curl --fail-with-body --silent --show-error \
+  --user "$TINAN_AUTH_USERNAME" \
+  --output tinan-sample-services.tar.gz \
+  "$APP_ORIGIN/api/projects/$PROJECT_ID/export"
+tar -tzf tinan-sample-services.tar.gz
+```
+
+This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
 
 ## Production deployment checklist — tinaneureka.com
 

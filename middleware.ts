@@ -6,6 +6,12 @@ async function digest(value: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(value)));
 }
 
+async function signOwner(ownerId: string, password: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', encoder.encode(password), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, encoder.encode(ownerId)));
+  return Array.from(signature, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
   let difference = left.length ^ right.length;
   for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
@@ -28,7 +34,7 @@ function unauthorized(): Response {
 export async function middleware(request: NextRequest): Promise<Response> {
   const username = process.env.TINAN_AUTH_USERNAME;
   const password = process.env.TINAN_AUTH_PASSWORD;
-  if (!username || !password || username.length > 128 || password.length < 20 || password.length > 4096) {
+  if (!username || !password || username.length > 128 || password.length < 32 || password.length > 4096) {
     return new Response(JSON.stringify({ error: 'Server authentication is not configured.' }), {
       status: 503,
       headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
@@ -80,6 +86,7 @@ export async function middleware(request: NextRequest): Promise<Response> {
     const requestHeaders = new Headers(request.headers);
     requestHeaders.delete('authorization');
     requestHeaders.set('x-tinan-owner-id', ownerId);
+    requestHeaders.set('x-tinan-owner-proof', await signOwner(ownerId, password));
     const response = NextResponse.next({ request: { headers: requestHeaders } });
     response.headers.set('Cache-Control', 'no-store');
     return response;

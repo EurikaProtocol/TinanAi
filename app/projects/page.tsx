@@ -209,7 +209,7 @@ export default function ProjectsPage() {
               <span className="project-list-icon">◇</span><span><strong>{project.name}</strong><small>{project.technology.slice(0, 2).join(' · ') || 'Project workspace'}</small></span>
             </button>
           ))}
-          <div className="project-storage-note">Workspaces stored in local server filesystem. No database or user sign-in is configured.</div>
+          <div className="project-storage-note">Single-owner sign-in · local server storage · no database</div>
         </aside>
 
         <section className="builder-main">
