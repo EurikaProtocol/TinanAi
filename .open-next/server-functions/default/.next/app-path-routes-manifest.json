@@ -1,0 +1,19 @@
+{
+  "/_not-found/page": "/_not-found",
+  "/api/agent/tasks/[id]/approval/route": "/api/agent/tasks/[id]/approval",
+  "/api/agent/tasks/[id]/route": "/api/agent/tasks/[id]",
+  "/api/agent/tasks/[id]/cancel/route": "/api/agent/tasks/[id]/cancel",
+  "/api/projects/[id]/checks/route": "/api/projects/[id]/checks",
+  "/api/projects/[id]/export/route": "/api/projects/[id]/export",
+  "/api/projects/[id]/files/route": "/api/projects/[id]/files",
+  "/api/projects/[id]/repair/route": "/api/projects/[id]/repair",
+  "/api/projects/[id]/rollback/route": "/api/projects/[id]/rollback",
+  "/api/projects/[id]/route": "/api/projects/[id]",
+  "/api/projects/tasks/[id]/cancel/route": "/api/projects/tasks/[id]/cancel",
+  "/api/projects/tasks/[id]/route": "/api/projects/tasks/[id]",
+  "/favicon.ico/route": "/favicon.ico",
+  "/api/agent/tasks/route": "/api/agent/tasks",
+  "/api/projects/route": "/api/projects",
+  "/page": "/",
+  "/projects/page": "/projects"
+}
