@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { isActiveProjectTaskStatus, isCancellableProjectTaskStatus, type ProjectTaskStatus } from '@/lib/builder/task-status';
 
 type Project = {
   id: string;
@@ -28,7 +29,7 @@ type Project = {
 type BuilderTask = {
   id: string;
   projectId: string | null;
-  status: 'planning' | 'awaiting_approval' | 'generating' | 'committing' | 'completed' | 'failed' | 'cancelled';
+  status: ProjectTaskStatus;
   plan: { summary: string; technology: string[]; features: string[]; steps: string[] } | null;
   progress: string[];
   errors: string[];
@@ -72,7 +73,7 @@ export default function ProjectsPage() {
       if (!response.ok) throw new Error(payload.error || 'Could not update task status.');
       const updated = payload.task as BuilderTask;
       setTask(updated);
-      if (!['planning', 'awaiting_approval', 'generating', 'committing'].includes(updated.status)) {
+      if (!isActiveProjectTaskStatus(updated.status)) {
         await refreshProjects();
         if (updated.kind === 'generation' && updated.status === 'completed' && updated.projectId) {
           setSelectedId(updated.projectId);
@@ -84,7 +85,7 @@ export default function ProjectsPage() {
   }, [refreshProjects]);
 
   useEffect(() => {
-    if (!task || !['planning', 'awaiting_approval', 'generating', 'committing'].includes(task.status)) return;
+    if (!task || !isActiveProjectTaskStatus(task.status)) return;
     const timer = window.setInterval(() => void refreshTask(task.id), 1000);
     return () => window.clearInterval(timer);
   }, [task, refreshTask]);
@@ -182,7 +183,7 @@ export default function ProjectsPage() {
   return (
     <main className="builder-shell">
       <header className="builder-topbar">
-        <Link className="builder-brand" href="/"><span className="brand-mark">T</span><strong>TINAN <span>ULTRA</span></strong></Link>
+        <Link className="builder-brand" href="/"><span className="brand-mark">T</span><strong>TINAN <span>AI</span></strong></Link>
         <div className="builder-breadcrumb"><Link href="/">Workspace</Link><span>/</span><strong>Project Builder</strong></div>
         <span className="builder-status"><i /> Plan review before generation</span>
       </header>
@@ -210,7 +211,7 @@ export default function ProjectsPage() {
               <span className="project-list-icon">◇</span><span><strong>{project.name}</strong><small>{project.technology.slice(0, 2).join(' · ') || 'Project workspace'}</small></span>
             </button>
           ))}
-          <div className="project-storage-note">Single-owner access · configured D1 metadata and R2 project files</div>
+          <div className="project-storage-note">Single-owner access · D1/R2 bindings required; production storage is not verified</div>
         </aside>
 
         <section className="builder-main">
@@ -227,7 +228,7 @@ export default function ProjectsPage() {
             />
             <div className="requirements-footer">
               <span>Up to 8,000 characters · Model output is validated before writing.</span>
-              <button className="builder-submit" disabled={!requirements.trim() || isSubmitting || (task !== null && ['planning', 'awaiting_approval', 'generating', 'committing'].includes(task.status))} type="submit">
+              <button className="builder-submit" disabled={!requirements.trim() || isSubmitting || (task !== null && isActiveProjectTaskStatus(task.status))} type="submit">
                 {isSubmitting ? 'Preparing plan…' : selectedId ? 'Plan project changes' : 'Create project plan'} <span>↗</span>
               </button>
               <span className="approval-cost-note">Planning contacts your configured provider; source generation waits for your approval.</span>
@@ -237,7 +238,7 @@ export default function ProjectsPage() {
           {task && (
             <section className="builder-task-card" aria-live="polite">
               <div className="builder-task-head"><div><span className={`task-state-dot ${task.status}`} /><strong>{task.kind === 'check' ? `${task.check} validation` : 'Project request'}</strong><small>{task.status.replace('_', ' ').toUpperCase()}</small></div>
-                {['planning', 'awaiting_approval', 'generating'].includes(task.status) && <button type="button" onClick={cancelTask}>Cancel</button>}
+                {isCancellableProjectTaskStatus(task.status) && <button type="button" onClick={cancelTask}>Cancel</button>}
               </div>
               {task.plan && <div className="project-plan-review">
                 <strong>REVIEW PROVIDER PLAN</strong>
@@ -268,7 +269,7 @@ export default function ProjectsPage() {
             <section className="builder-empty-state">
               <span className="builder-empty-glyph">✳</span>
               <h2>A real project starts with a clear brief.</h2>
-              <p>Generated files will be stored in an isolated workspace with reviewable changes and explicit check results.</p>
+              <p>Approve a structured provider plan before source generation. Files are validated and stored for review; execution remains disabled.</p>
               <div><span>01</span> Project specification <span>02</span> Task plan <span>03</span> Source tree</div>
             </section>
           )}

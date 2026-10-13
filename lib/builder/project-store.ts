@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { GeneratedProject, ProjectPlan } from '../agent/openai-provider';
+import type { ProjectTaskStatus } from './task-status';
 import { getProjectStorageBindings } from './cloudflare-storage';
 
 export type ProjectRecord = {
@@ -34,7 +35,7 @@ export type ProjectTask = {
   requirements: string;
   plan: ProjectPlan | null;
   check: string | null;
-  status: 'planning' | 'awaiting_approval' | 'generating' | 'committing' | 'completed' | 'failed' | 'cancelled';
+  status: ProjectTaskStatus;
   progress: string[];
   errors: string[];
   createdAt: string;
@@ -135,7 +136,7 @@ export async function createProjectTask(
     plan: null,
     check,
     status: initialStatus,
-    progress: ['Project generation requested.'],
+    progress: [initialStatus === 'planning' ? 'Project planning requested.' : 'Project task requested.'],
     errors: [],
     createdAt: now,
     updatedAt: now,
@@ -420,21 +421,21 @@ export async function listProjects(ownerId: string): Promise<ProjectRecord[]> {
     } catch {
       return [];
     }
-
-    async function cleanupUnreferencedProjectSnapshots(ownerId: string): Promise<void> {
-      const { TINAN_DB } = await getProjectStorageBindings();
-      const result = await TINAN_DB.prepare(
-        'SELECT project_id, owner_id, snapshot_id, files_json FROM project_backups WHERE owner_id = ? LIMIT 1000',
-      ).bind(ownerId).all<BackupRow>();
-      for (const backup of result.results ?? []) {
-        try {
-          await deleteSnapshotIfUnreferenced(backup.project_id, ownerId, backup.snapshot_id);
-        } catch {
-          // Leave failed cleanup metadata available for the next project-list request.
-        }
-      }
-    }
   });
+}
+
+async function cleanupUnreferencedProjectSnapshots(ownerId: string): Promise<void> {
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    'SELECT project_id, owner_id, snapshot_id, files_json FROM project_backups WHERE owner_id = ? LIMIT 1000',
+  ).bind(ownerId).all<BackupRow>();
+  for (const backup of result.results ?? []) {
+    try {
+      await deleteSnapshotIfUnreferenced(backup.project_id, ownerId, backup.snapshot_id);
+    } catch {
+      // Leave failed cleanup metadata available for the next project-list request.
+    }
+  }
 }
 
 export async function getProject(id: string, ownerId: string): Promise<ProjectRecord | undefined> {

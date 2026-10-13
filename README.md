@@ -1,6 +1,6 @@
 # TINAN AI
 
-TINAN AI is an AI-assisted project workspace built on Next.js App Router, React, and TypeScript. The public homepage is available at `/`; `/workspace`, `/projects`, and API routes require the configured single-owner HTTP Basic Auth credentials.
+TINAN AI is an AI-assisted project workspace built on Next.js App Router, React, and TypeScript. The public homepage is available at `/`; `/workspace`, `/projects`, and all API routes require the configured single-owner HTTP Basic Auth credentials.
 
 ## Agent core
 
@@ -111,13 +111,13 @@ Set the provider to `openai-compatible` only when intentionally enabling paid/cr
 
 ## Persistence and deployment limits
 
-The app and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; requests are challenged before the app runs, unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
+Authenticated app routes and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; the public homepage is intentionally accessible without credentials. Unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
 
 ## Phase 4 verification status
 
 - Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small plan-and-approval generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
 - Project checks and execution are disabled by the implementation; no Docker isolation is claimed. `TINAN_SANDBOX_VERIFIED` remains `false`.
-- Tests cover mocked provider responses/failures/timeouts, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, owner filtering, path traversal rejection, task persistence/cancellation, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
+- Tests cover mocked provider responses/failures/timeouts, structured project planning and approval before source generation, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, cleanup retry after R2 errors, owner filtering, path traversal rejection, task persistence/cancellation, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
 
 ### Manual OpenRouter website generation test
 

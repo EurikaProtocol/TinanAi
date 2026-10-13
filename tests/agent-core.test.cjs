@@ -42,6 +42,7 @@ const { gunzipSync } = require('node:zlib');
 const { isActiveTaskStatus } = require('../.test-build/lib/agent/types.js');
 const postcss = require('postcss');
 const storageModule = require('../.test-build/lib/builder/cloudflare-storage.js');
+const { isActiveProjectTaskStatus, isCancellableProjectTaskStatus } = require('../.test-build/lib/builder/task-status.js');
 
 const database = new DatabaseSync(':memory:');
 const migrations = require('node:fs').readFileSync(path.join(process.cwd(), 'migrations/0001_initial.sql'), 'utf8');
@@ -313,6 +314,14 @@ test('approved tasks remain active until execution reaches a terminal status', (
   assert.equal(isActiveTaskStatus('completed'), false);
   assert.equal(isActiveTaskStatus('failed'), false);
   assert.equal(isActiveTaskStatus('cancelled'), false);
+});
+
+test('project task polling includes approval and cancellation is blocked once file writes start', () => {
+  assert.equal(isActiveProjectTaskStatus('awaiting_approval'), true);
+  assert.equal(isCancellableProjectTaskStatus('awaiting_approval'), true);
+  assert.equal(isActiveProjectTaskStatus('committing'), true);
+  assert.equal(isCancellableProjectTaskStatus('committing'), false);
+  assert.equal(isActiveProjectTaskStatus('completed'), false);
 });
 
 test('builder styles apply normally while reduced-motion rules only disable motion', () => {
