@@ -31,6 +31,43 @@ All provider secrets are server-only. Do not prefix these values with `NEXT_PUBL
 
 No real provider credentials were available during implementation, so provider integration was tested with mocked HTTP responses; a paid/external provider connection is not claimed.
 
+## Cloudflare Workers
+
+This project uses `@opennextjs/cloudflare@1.19.11` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.18 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). The adapter version was chosen instead of `1.20.11` because the latter added npm audit findings in this repository's lockfile. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
+
+The OpenNext adapter build and basic local Wrangler preview have been verified. A mock-provider local Worker run accepted generation and reported success, but a subsequent request for the generated project returned `404`: the current filesystem-backed project store does not persist between Worker requests. Therefore the Project Builder APIs are **not yet compatible for usable Cloudflare project storage**, and this application must not be treated as fully Cloudflare-compatible for production. A durable Cloudflare storage/task adapter (such as R2 plus D1 or Durable Objects) is required before project generation/history can be guaranteed across requests, isolates, or restarts. Sandbox execution requiring Docker and `child_process` is unsupported on Workers and must remain disabled there.
+
+### Workers Builds screen
+
+In **Workers & Pages → Workers → Build → Build settings**, use:
+
+- **Production branch:** `main` (merge this feature branch into `main` before enabling production builds).
+- **Root directory:** `/` (repository root).
+- **Build command:** `npm run build:cloudflare`.
+- **Deploy command:** `npm run deploy:cloudflare`.
+- **Build environment variable:** `NODE_VERSION=22` (also recorded in `.node-version`).
+- **Install command, if shown:** `npm ci`.
+
+This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
+
+### Worker runtime settings
+
+Set the following under the Worker's **Settings → Variables and Secrets** for each environment (production and preview/development separately). Do not use these values to enable a production rollout until the filesystem/task persistence limitation above has been resolved.
+
+| Name | Type | Value |
+| --- | --- | --- |
+| `TINAN_AUTH_USERNAME` | Variable | Your single-owner sign-in name. |
+| `TINAN_AUTH_PASSWORD` | Secret | A newly generated random value of at least 32 characters. |
+| `TINAN_AI_PROVIDER` | Variable | `openai-compatible` to enable real provider requests; `demo` keeps real requests disabled. |
+| `TINAN_AI_API_KEY` | Secret | The existing OpenRouter secret, entered directly in Cloudflare's secret UI. Do not paste it into GitHub source, build logs, or chat. |
+| `TINAN_AI_MODEL` | Variable | Exact model ID selected from OpenRouter. |
+| `TINAN_AI_BASE_URL` | Variable | `https://openrouter.ai/api/v1`. |
+| `TINAN_AI_TIMEOUT_MS` | Variable | Optional integer from `1000` to `60000`; e.g. `20000`. |
+| `TINAN_ENABLE_FILE_READING` | Variable | `false` unless explicitly needed. |
+| `TINAN_SANDBOX_VERIFIED` | Variable | `false`; do not enable Worker sandbox execution. |
+
+Set the provider to `openai-compatible` only when intentionally enabling paid/credit-consuming provider calls. Cloudflare secrets/variables are runtime settings and must be present on the deployed Worker; build-time secrets are not a substitute. For local Wrangler preview, copy `.dev.vars.example` to `.dev.vars` and use test-only values. Never put a real provider key in the example file.
+
 ## Project Builder
 
 - Visit `/projects` to submit natural-language requirements. A configured real provider is required; without it, generation fails with a setup message and no project is claimed as generated.

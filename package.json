@@ -6,7 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "build:cloudflare": "opennextjs-cloudflare build",
-    "preview:cloudflare": "wrangler dev",
+    "preview:cloudflare": "opennextjs-cloudflare build && wrangler dev",
     "deploy:cloudflare": "opennextjs-cloudflare deploy",
     "start": "next start",
     "lint": "next lint",
@@ -31,7 +31,10 @@
     "postcss": "^8.5.30"
   },
   "devDependencies": {
-    "@opennextjs/cloudflare": "^1.19.11",
-    "wrangler": "^4.150.0"
+    "@opennextjs/cloudflare": "1.19.11",
+    "wrangler": "4.150.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
