@@ -44,10 +44,6 @@ export function getTask(id: string): AgentTask | undefined {
   return runtime().tasks.get(id);
 }
 
-export function listTasks(): AgentTask[] {
-  return [...runtime().tasks.values()].reverse();
-}
-
 export function getTaskSignal(id: string): AbortSignal | undefined {
   return runtime().controllers.get(id)?.signal;
 }

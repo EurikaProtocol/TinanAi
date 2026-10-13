@@ -343,7 +343,7 @@ function TaskPlanCard({ task, onRespond }: {
             <span className="step-number">{step.id}</span>
             <span className="step-copy"><strong>{step.title}</strong><small>{step.description}</small></span>
             <span className={`permission-tag ${step.permission.toLowerCase()}`}>{step.permission}</span>
-            {step.tool && <span className="tool-label">{step.tool}</span>}
+            {step.tool && <span className="tool-label">{step.tool.name}</span>}
           </li>
         ))}
       </ol>

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { after, NextResponse } from 'next/server';
 import { createTaskRecord, planTask } from '@/lib/agent/engine';
 import { getOpenAICompatibleConfig, getProviderMode, ProviderError } from '@/lib/agent/openai-provider';
-import { allowRequest, createTask, listTasks } from '@/lib/agent/task-store';
+import { allowRequest, createTask } from '@/lib/agent/task-store';
 
 export const runtime = 'nodejs';
 const MAX_OBJECTIVE_LENGTH = 2000;
@@ -22,7 +22,7 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  if (!allowRequest(rateLimitKey(request))) {
+  if (!allowRequest('process-global')) {
     return NextResponse.json({ error: 'Too many task requests. Try again in a minute.' }, { status: 429 });
   }
 
@@ -71,10 +71,4 @@ export async function POST(request: Request) {
     { provider, simulated: provider === 'demo', task, persistence: 'process-memory' },
     { status: 202 },
   );
-}
-
-function rateLimitKey(request: Request): string {
-  const forwarded = request.headers.get('x-forwarded-for');
-  const proxyAddress = forwarded?.split(',').pop()?.trim();
-  return proxyAddress || request.headers.get('x-real-ip') || 'unknown';
 }

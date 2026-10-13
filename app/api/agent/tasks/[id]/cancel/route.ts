@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { cancelTask } from '@/lib/agent/task-store';
 
-type RouteContext = { params: { id: string } | Promise<{ id: string }> };
+type RouteContext = { params: Promise<{ id: string }> };
 
 export async function POST(_request: Request, context: RouteContext) {
   const { id } = await context.params;
