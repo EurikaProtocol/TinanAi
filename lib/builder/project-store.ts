@@ -232,9 +232,14 @@ export async function updateProjectTask(
     updatedAt: new Date().toISOString(),
   };
   const { TINAN_DB } = await getProjectStorageBindings();
-  await TINAN_DB.prepare(
+  const result = await TINAN_DB.prepare(
     "UPDATE project_tasks SET project_id = ?, record_json = ?, status = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
   ).bind(next.projectId, JSON.stringify(next), status, next.updatedAt, task.id, task.ownerId).run();
+  if (!result.meta?.changes) {
+    const current = await getProjectTask(task.id, task.ownerId);
+    if (current) Object.assign(task, current);
+    return;
+  }
   Object.assign(task, next);
   if (status !== 'generating') runtime().controllers.delete(task.id);
 }
@@ -243,8 +248,21 @@ export async function cancelProjectTask(id: string, ownerId: string): Promise<Pr
   const task = await getProjectTask(id, ownerId);
   if (!task) return undefined;
   if (task.status === 'generating') {
-    runtime().controllers.get(id)?.abort();
-    await updateProjectTask(task, 'cancelled', 'Generation cancelled by the user.');
+    const updated: ProjectTask = {
+      ...task,
+      status: 'cancelled',
+      progress: task.progress.concat('Generation cancelled by the user.'),
+      updatedAt: new Date().toISOString(),
+    };
+    const { TINAN_DB } = await getProjectStorageBindings();
+    const result = await TINAN_DB.prepare(
+      "UPDATE project_tasks SET record_json = ?, status = 'cancelled', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
+    ).bind(JSON.stringify(updated), updated.updatedAt, id, ownerId).run();
+    if (result.meta?.changes) {
+      runtime().controllers.get(id)?.abort();
+      runtime().controllers.delete(id);
+      return updated;
+    }
     return getProjectTask(id, ownerId);
   }
   return task;
@@ -428,7 +446,7 @@ export async function rollbackProject(id: string, ownerId: string): Promise<Proj
   for (const relative of record.files) {
     if (!restored.has(relative)) await TINAN_PROJECT_FILES.delete(metadataKey(ownerId, id, relative));
   }
-  for (const [relative, content] of restored) {
+  for (const [relative, content] of Array.from(restored.entries())) {
     await TINAN_PROJECT_FILES.put(metadataKey(ownerId, id, relative), content);
   }
   record.files = files;
