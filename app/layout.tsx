@@ -10,21 +10,11 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'TINAN AI — Natural Intelligence',
     description: 'A thoughtful workspace for turning ideas into clear, reviewable plans.',
-    images: [
-      {
-        url: 'https://bolt.new/static/og_default.png',
-      },
-    ],
   },
   twitter: {
     card: 'summary_large_image',
     title: 'TINAN AI — Natural Intelligence',
     description: 'A thoughtful workspace for turning ideas into clear, reviewable plans.',
-    images: [
-      {
-        url: 'https://bolt.new/static/og_default.png',
-      },
-    ],
   },
 };
 
