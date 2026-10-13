@@ -299,7 +299,7 @@ function ProjectWorkspace({
     <section className="project-workspace">
       <div className="project-summary">
         <div><div className="section-kicker">PROJECT SPECIFICATION</div><h2>{project.name}</h2><p>{project.specification}</p></div>
-        <div className="project-actions"><a href={`/api/projects/${encodeURIComponent(project.id)}/export`}>Export .tar.gz</a><button type="button" onClick={onRollback}>Rollback last generation</button></div>
+        <div className="project-actions"><a href={`/api/projects/${encodeURIComponent(project.id)}/export`}>Export .zip</a><button type="button" onClick={onRollback}>Rollback last generation</button></div>
         <div className="technology-tags">{project.technology.map((item) => <span key={item}>{item}</span>)}</div>
         <div className="task-plan-list"><strong>BUILD PLAN</strong>{project.tasks.map((item, index) => <p key={`${index}-${item}`}><span>{String(index + 1).padStart(2, '0')}</span>{item}</p>)}</div>
       </div>

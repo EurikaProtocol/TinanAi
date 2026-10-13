@@ -1,55 +1,96 @@
-import { gzipSync } from 'node:zlib';
-
 type ArchiveFile = { path: string; content: Buffer };
 
+const crcTable = new Uint32Array(256);
+for (let index = 0; index < crcTable.length; index += 1) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) value = (value & 1) ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  crcTable[index] = value >>> 0;
+}
+
 export function createProjectArchive(files: ArchiveFile[]): Buffer {
+  if (files.length > 0xffff) throw new Error('Cannot export more files than the ZIP format supports.');
   const chunks: Buffer[] = [];
+  const centralDirectory: Buffer[] = [];
+  const [dosTime, dosDate] = getDosTimestamp(new Date());
+  let offset = 0;
+  let centralDirectorySize = 0;
+  const seen = new Set<string>();
+
   for (const file of files) {
     const name = file.path.replace(/\\/g, '/');
-    if (!name || name.startsWith('/') || name.split('/').some((part) => !part || part === '.' || part === '..') ||
-        Buffer.byteLength(name) > 255) {
-      throw new Error('Cannot export a project with an invalid path.');
+    if (!name || name.startsWith('/') || /[\0<>:"|?*]/.test(name) ||
+        name.split('/').some((part) => !part || part === '.' || part === '..') ||
+        Buffer.byteLength(name, 'utf8') > 0xffff || seen.has(name)) {
+      throw new Error('Cannot export a project with an invalid or duplicate path.');
     }
-    const { basename, prefix } = splitTarPath(name);
-    const header = Buffer.alloc(512);
-    writeString(header, 0, 100, basename);
-    writeOctal(header, 100, 8, 0o600);
-    writeOctal(header, 108, 8, 0);
-    writeOctal(header, 116, 8, 0);
-    writeOctal(header, 124, 12, file.content.length);
-    writeOctal(header, 136, 12, Math.floor(Date.now() / 1000));
-    header.fill(0x20, 148, 156);
-    header[156] = '0'.charCodeAt(0);
-    writeString(header, 257, 6, 'ustar\0');
-    writeString(header, 263, 2, '00');
-    if (prefix) writeString(header, 345, 155, prefix);
-    const checksum = header.reduce((sum, byte) => sum + byte, 0);
-    writeOctal(header, 148, 8, checksum);
-    chunks.push(header, file.content);
-    const padding = (512 - (file.content.length % 512)) % 512;
-    if (padding) chunks.push(Buffer.alloc(padding));
+    seen.add(name);
+    if (file.content.length > 0xffffffff) throw new Error('Cannot export a file larger than the ZIP format supports.');
+
+    const nameBytes = Buffer.from(name, 'utf8');
+    const checksum = crc32(file.content);
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(dosTime, 10);
+    localHeader.writeUInt16LE(dosDate, 12);
+    localHeader.writeUInt32LE(checksum, 14);
+    localHeader.writeUInt32LE(file.content.length, 18);
+    localHeader.writeUInt32LE(file.content.length, 22);
+    localHeader.writeUInt16LE(nameBytes.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+    chunks.push(localHeader, nameBytes, file.content);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(dosTime, 12);
+    centralHeader.writeUInt16LE(dosDate, 14);
+    centralHeader.writeUInt32LE(checksum, 16);
+    centralHeader.writeUInt32LE(file.content.length, 20);
+    centralHeader.writeUInt32LE(file.content.length, 24);
+    centralHeader.writeUInt16LE(nameBytes.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralDirectory.push(centralHeader, nameBytes);
+
+    offset += localHeader.length + nameBytes.length + file.content.length;
+    centralDirectorySize += centralHeader.length + nameBytes.length;
   }
-  chunks.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(chunks), { level: 6, maxOutputLength: 2 * 1024 * 1024 });
+
+  const centralDirectoryOffset = offset;
+  const endOfCentralDirectory = Buffer.alloc(22);
+  endOfCentralDirectory.writeUInt32LE(0x06054b50, 0);
+  endOfCentralDirectory.writeUInt16LE(0, 4);
+  endOfCentralDirectory.writeUInt16LE(0, 6);
+  endOfCentralDirectory.writeUInt16LE(files.length, 8);
+  endOfCentralDirectory.writeUInt16LE(files.length, 10);
+  endOfCentralDirectory.writeUInt32LE(centralDirectorySize, 12);
+  endOfCentralDirectory.writeUInt32LE(centralDirectoryOffset, 16);
+  endOfCentralDirectory.writeUInt16LE(0, 20);
+
+  return Buffer.concat([...chunks, ...centralDirectory, endOfCentralDirectory]);
 }
 
-function splitTarPath(name: string): { basename: string; prefix: string } {
-  if (Buffer.byteLength(name) <= 100) return { basename: name, prefix: '' };
-  const parts = name.split('/');
-  for (let index = parts.length - 1; index > 0; index -= 1) {
-    const prefix = parts.slice(0, index).join('/');
-    const basename = parts.slice(index).join('/');
-    if (Buffer.byteLength(prefix) <= 155 && Buffer.byteLength(basename) <= 100) {
-      return { basename, prefix };
-    }
+function crc32(content: Buffer): number {
+  let checksum = 0xffffffff;
+  for (let index = 0; index < content.length; index += 1) {
+    checksum = (crcTable[(checksum ^ content[index]) & 0xff] ?? 0) ^ (checksum >>> 8);
   }
-  throw new Error('Cannot export a project path longer than the tar format supports.');
+  return (checksum ^ 0xffffffff) >>> 0;
 }
 
-function writeString(buffer: Buffer, offset: number, length: number, value: string): void {
-  buffer.write(value, offset, length, 'utf8');
-}
-
-function writeOctal(buffer: Buffer, offset: number, length: number, value: number): void {
-  buffer.write(value.toString(8).padStart(length - 1, '0').slice(-(length - 1)) + '\0', offset, length, 'ascii');
+function getDosTimestamp(date: Date): [number, number] {
+  const year = Math.max(1980, Math.min(date.getFullYear(), 2107));
+  const time = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const day = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  return [time, day];
 }

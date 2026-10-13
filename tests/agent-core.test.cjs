@@ -38,7 +38,6 @@ const {
 const { createProjectArchive } = require('../.test-build/lib/builder/archive.js');
 const { runProjectGeneration, runProjectPlanning } = require('../.test-build/lib/builder/runner.js');
 const { runSandboxCheck } = require('../.test-build/lib/builder/sandbox.js');
-const { gunzipSync } = require('node:zlib');
 const { isActiveTaskStatus } = require('../.test-build/lib/agent/types.js');
 const postcss = require('postcss');
 const storageModule = require('../.test-build/lib/builder/cloudflare-storage.js');
@@ -114,6 +113,23 @@ const generatedProject = {
 };
 const ownerA = 'a'.repeat(64);
 const ownerB = 'b'.repeat(64);
+
+function readZipEntries(archive) {
+  const entries = new Map();
+  let offset = 0;
+  while (offset + 4 <= archive.length && archive.readUInt32LE(offset) === 0x04034b50) {
+    const compressedSize = archive.readUInt32LE(offset + 18);
+    const fileNameLength = archive.readUInt16LE(offset + 26);
+    const extraLength = archive.readUInt16LE(offset + 28);
+    const fileNameStart = offset + 30;
+    const fileName = archive.toString('utf8', fileNameStart, fileNameStart + fileNameLength);
+    const contentStart = fileNameStart + fileNameLength + extraLength;
+    entries.set(fileName, archive.subarray(contentStart, contentStart + compressedSize));
+    offset = contentStart + compressedSize;
+  }
+  assert.equal(archive.readUInt32LE(archive.length - 22), 0x06054b50);
+  return entries;
+}
 
 test('request authentication accepts only middleware-provided opaque owner IDs', () => {
   const previousPassword = process.env.TINAN_AUTH_PASSWORD;
@@ -391,14 +407,17 @@ test('project workspaces are isolated, readable, exportable, and rollback genera
     const requestAfterSecondRestart = freshProjectStore();
     assert.match(await requestAfterSecondRestart.readProjectFile(first.id, 'src/index.ts', ownerA), /updated/);
     const exportedAfterRestart = await requestAfterSecondRestart.exportProjectFiles(first.id, ownerA);
-    assert.match(gunzipSync(createProjectArchive(exportedAfterRestart.files)).toString('utf8'), /updated/);
+    const updateArchive = createProjectArchive(exportedAfterRestart.files);
+    assert.equal(updateArchive.readUInt32LE(0), 0x04034b50);
+    assert.match(readZipEntries(updateArchive).get('src/index.ts').toString('utf8'), /updated/);
     const rolledBack = await requestAfterSecondRestart.rollbackProject(first.id, ownerA);
     assert.deepEqual(rolledBack.files, ['src/index.ts']);
     const requestAfterRollbackRestart = freshProjectStore();
     assert.equal(await requestAfterRollbackRestart.readProjectFile(first.id, 'src/index.ts', ownerA), generatedProject.files[0].content);
 
     const exported = createProjectArchive((await requestAfterRollbackRestart.exportProjectFiles(first.id, ownerA)).files);
-    assert.match(gunzipSync(exported).toString('utf8'), /export const greeting/);
+    assert.match(readZipEntries(exported).get('src/index.ts').toString('utf8'), /export const greeting/);
+    assert.throws(() => createProjectArchive([{ path: '../escape.txt', content: Buffer.from('no') }]), /invalid/);
   } finally {
     resetProjectStorage();
   }
@@ -663,11 +682,10 @@ test('mocked OpenRouter website generation validates, isolates, and exports real
     const deniedProject = await getProjectForOwner(project.id, ownerB);
     assert.equal(deniedProject, undefined);
     const archive = createProjectArchive(await exportProjectFiles(project.id, ownerA).then((result) => result.files));
-    const archiveContents = gunzipSync(archive).toString('utf8');
-    assert.match(archiveContents, /index\.html/);
-    assert.match(archiveContents, /styles\.css/);
-    assert.match(archiveContents, /Services made simple/);
-    assert.match(archiveContents, /@media/);
+    const archiveEntries = readZipEntries(archive);
+    assert.deepEqual(Array.from(archiveEntries.keys()), ['index.html', 'styles.css', 'deployment.config.json']);
+    assert.match(archiveEntries.get('index.html').toString('utf8'), /Services made simple/);
+    assert.match(archiveEntries.get('styles.css').toString('utf8'), /@media/);
   } finally {
     resetProjectStorage();
   }

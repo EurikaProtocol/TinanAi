@@ -105,13 +105,15 @@ Set the provider to `openai-compatible` only when intentionally enabling paid/cr
 
 - Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
 - Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Project metadata/tasks are owner-scoped in D1; source files and rollback snapshots use owner-prefixed R2 keys.
-- Source export is a `.tar.gz` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
+- Source export is a `.zip` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
 - Project execution and generated code checks are disabled in the interface and API; requests return unavailable and never spawn a process or execute model-generated commands.
 - After a failed check, one explicit AI repair attempt is available per project. Updates are diffed and the prior source can be restored from the durable R2 snapshot.
 
 ## Persistence and deployment limits
 
 Authenticated app routes and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; the public homepage is intentionally accessible without credentials. Unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
+
+The app sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy` headers. Authentication does not provide a user-management or password-reset flow.
 
 ## Phase 4 verification status
 
@@ -148,9 +150,9 @@ curl --fail-with-body --silent --show-error \
   "$APP_ORIGIN/api/projects/$PROJECT_ID" | jq '.project.files'
 curl --fail-with-body --silent --show-error \
   --user "$TINAN_AUTH_USERNAME" \
-  --output tinan-sample-services.tar.gz \
+  --output tinan-sample-services.zip \
   "$APP_ORIGIN/api/projects/$PROJECT_ID/export"
-tar -tzf tinan-sample-services.tar.gz
+unzip -l tinan-sample-services.zip
 ```
 
 This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
