@@ -94,9 +94,9 @@ export default function AgentWorkspace() {
     fetch('/api/agent/tasks')
       .then(async (response) => response.ok ? response.json() : null)
       .then((payload) => {
-        if (payload?.provider === 'openai-compatible' && !payload.providerConfigured) {
+        if (payload?.provider === 'unconfigured' || !payload?.providerConfigured) {
           setProvider('unconfigured');
-          setError('OpenAI-compatible provider is selected but server credentials/model are incomplete.');
+          setError('Provider setup is incomplete or invalid. Review server-side TINAN_AI_* settings.');
         } else if (payload?.provider === 'openai-compatible' || payload?.provider === 'demo') {
           setProvider(payload.provider);
         }

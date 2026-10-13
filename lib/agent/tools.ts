@@ -13,7 +13,7 @@ type RegisteredTool = {
 };
 
 const maxFileBytes = 64 * 1024;
-const forbiddenPathPart = /^(?:\.|\.git|\.next|node_modules|\.env(?:\..*)?|.*(?:secret|credential|private[-_]?key).*)$/i;
+const forbiddenPathPart = /^(?:\.|\.git|\.next|node_modules|\.ssh|\.aws|\.env(?:\..*)?|.*(?:secret|credential|private[-_]?key|(?:^|[._-])id_(?:rsa|ed25519|ecdsa)(?:[._-]|$)).*|.*\.(?:pem|key|p12|pfx))$/i;
 
 const registry: Record<string, RegisteredTool> = {
   'project.info': {
@@ -84,8 +84,6 @@ const registry: Record<string, RegisteredTool> = {
     },
   },
 };
-
-export const availableToolNames = Object.keys(registry);
 
 export async function executeTool(
   call: ToolCall,

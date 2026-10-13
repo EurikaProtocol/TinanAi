@@ -1,4 +1,4 @@
-import type { AgentTask, ProgressEvent, TaskStatus } from './types';
+import type { AgentTask, TaskStatus } from './types';
 
 type Runtime = {
   tasks: Map<string, AgentTask>;
@@ -95,8 +95,4 @@ export function allowRequest(key: string, now = Date.now()): boolean {
   recent.push(now);
   requests.set(key, recent);
   return true;
-}
-
-export function makeProgress(status: TaskStatus, message: string): ProgressEvent {
-  return { status, message, timestamp: new Date().toISOString() };
 }

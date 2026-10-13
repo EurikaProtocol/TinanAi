@@ -9,13 +9,13 @@ const MAX_OBJECTIVE_LENGTH = 2000;
 const MAX_BODY_BYTES = 16 * 1024;
 
 export async function GET() {
-  let provider: 'demo' | 'openai-compatible';
+  let provider: 'demo' | 'openai-compatible' | 'unconfigured';
   let providerConfigured = true;
   try {
     provider = getProviderMode();
     if (provider === 'openai-compatible') getOpenAICompatibleConfig();
   } catch {
-    provider = 'demo';
+    provider = 'unconfigured';
     providerConfigured = false;
   }
   return NextResponse.json({ provider, providerConfigured, persistence: 'process-memory' });

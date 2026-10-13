@@ -11,7 +11,7 @@ const {
   ProviderError,
   validatePlan,
 } = require('../.test-build/openai-provider.js');
-const { cancelTask, createTask, getTask, recordApproval, transitionTask } = require('../.test-build/task-store.js');
+const { allowRequest, cancelTask, createTask, getTask, recordApproval, transitionTask } = require('../.test-build/task-store.js');
 const { executeTool, hasPermission } = require('../.test-build/tools.js');
 
 const validEnv = {
@@ -66,6 +66,25 @@ test('provider failures and invalid provider plans fail closed', async () => {
     () => validatePlan({ summary: 'bad', requiresApproval: false, steps: [{ title: 'deploy', description: '', permission: 'PRODUCTION', tool: null }] }),
     /must request approval/,
   );
+  await assert.rejects(
+    createModelPlan('objective', [], undefined, validEnv, async () => new Response('not json', { status: 200 })),
+    /invalid response|invalid plan format/,
+  );
+});
+
+test('provider requests enforce the configured timeout', async () => {
+  await assert.rejects(
+    createModelPlan(
+      'objective',
+      [],
+      undefined,
+      { ...validEnv, TINAN_AI_TIMEOUT_MS: '1000' },
+      async (_url, options) => new Promise((_resolve, reject) => {
+        options.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+    ),
+    /timed out/,
+  );
 });
 
 test('tool permissions reject unregistered tools and require TEST for test proposals', async () => {
@@ -115,6 +134,15 @@ test('task state transitions reject invalid moves and support approval and cance
   createTask(cancelled);
   assert.equal(cancelTask(cancelled.id).status, 'cancelled');
   assert.equal(getTask(cancelled.id).status, 'cancelled');
+});
+
+test('process-local task rate limiter rejects bursts and expires old requests', () => {
+  const key = `rate-test-${Date.now()}`;
+  for (let index = 0; index < 20; index += 1) {
+    assert.equal(allowRequest(key, 1000), true);
+  }
+  assert.equal(allowRequest(key, 1000), false);
+  assert.equal(allowRequest(key, 62_000), true);
 });
 
 test('demo planning never selects tools and identifies sensitive goals', async () => {

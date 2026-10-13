@@ -108,7 +108,7 @@ export async function createModelPlan(
       throw new ProviderError(`The configured AI provider returned HTTP ${response.status}.`);
     }
 
-    const payload: unknown = await response.json();
+    const payload: unknown = await readBoundedResponse(response);
     const content = getAssistantContent(payload);
     return validatePlan(JSON.parse(content));
   } catch (error) {
@@ -122,6 +122,37 @@ export async function createModelPlan(
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+async function readBoundedResponse(response: Response): Promise<unknown> {
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > 64 * 1024 || !response.body) {
+    throw new ProviderError('The AI provider response exceeded the supported size.');
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > 64 * 1024) {
+      await reader.cancel();
+      throw new ProviderError('The AI provider response exceeded the supported size.');
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new ProviderError('The AI provider returned an invalid response.');
   }
 }
 

@@ -1,7 +1,7 @@
 import { createModelPlan, getProviderMode, ProviderError } from './openai-provider';
 import { appendTaskError, getTask, getTaskSignal, transitionTask } from './task-store';
 import { executeTool } from './tools';
-import type { AgentPlan, AgentTask, PlanStep } from './types';
+import type { AgentPlan, AgentTask } from './types';
 
 const sensitiveActionPattern = /\b(production|mainnet|deploy|deployment|transfer|send funds|payment|purchase|delete|remove|destroy|withdraw|approve allowance|irreversible)\b/i;
 
@@ -121,7 +121,7 @@ export function createTaskRecord(
     status: 'planning',
     provider,
     simulated: provider === 'demo',
-    plan: [] as PlanStep[],
+    plan: [],
     summary: '',
     selectedTools: [],
     toolResults: [],
