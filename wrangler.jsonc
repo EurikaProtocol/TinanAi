@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tinan-ai",
+  "name": "tinanai2",
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-10-13",
   "compatibility_flags": [
@@ -16,14 +16,13 @@
   "services": [
     {
       "binding": "WORKER_SELF_REFERENCE",
-      "service": "tinan-ai"
+      "service": "tinanai2"
     }
   ],
   "d1_databases": [
     {
       "binding": "TINAN_DB",
       "database_name": "tinan-ai-metadata",
-      "database_id": "00000000000000000000000000000000",
       "migrations_dir": "migrations"
     }
   ],
