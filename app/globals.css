@@ -778,6 +778,13 @@ textarea:focus-visible {
   letter-spacing: 0;
 }
 
+.task-summary {
+  margin: 9px 11px 0;
+  color: #9caaa1;
+  font-size: 9px;
+  line-height: 1.5;
+}
+
 .plan-card > h3 {
   overflow-wrap: anywhere;
   margin: 11px 11px 4px;
@@ -873,6 +880,77 @@ textarea:focus-visible {
 
 .simulation-note > span {
   color: #83b991;
+}
+
+.tool-label {
+  max-width: 130px;
+  overflow: hidden;
+  padding: 3px 5px;
+  border: 1px solid #2c4033;
+  border-radius: 3px;
+  color: #9dc9a9;
+  font-family: monospace;
+  font-size: 7px;
+  text-overflow: ellipsis;
+}
+
+.approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 9px 10px 0;
+}
+
+.approval-actions .approval-notice {
+  width: 100%;
+  margin: 0 0 2px;
+}
+
+.approval-actions button,
+.cancel-task {
+  padding: 6px 8px;
+  border: 1px solid #405748;
+  border-radius: 4px;
+  background: #1d3024;
+  color: #b7e2c3;
+  cursor: pointer;
+  font-size: 8px;
+}
+
+.approval-actions button:hover,
+.cancel-task:hover {
+  border-color: #78bd8c;
+}
+
+.approval-actions button:last-child {
+  border-color: #4b3932;
+  background: #2c211e;
+  color: #d4a99b;
+}
+
+.cancel-task {
+  margin: 9px 10px 0;
+  border-color: #4b3932;
+  background: #2c211e;
+  color: #d4a99b;
+}
+
+.task-error,
+.tool-result {
+  margin: 8px 10px 0;
+  color: #e2a9a1;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.tool-result {
+  color: #a7baad;
+}
+
+.tool-result.rejected,
+.tool-result.failed {
+  color: #e2a9a1;
 }
 
 .insights-column {
