@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tinan-ai",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-10-13",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "nodejs_compat_populate_process_env",
+    "global_fetch_strictly_public"
+  ],
+  "workers_dev": true,
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "tinan-ai"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "TINAN_DB",
+      "database_name": "tinan-ai-metadata",
+      "database_id": "00000000000000000000000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "TINAN_PROJECT_FILES",
+      "bucket_name": "tinan-ai-project-files"
+    }
+  ],
+  "vars": {
+    "TINAN_SANDBOX_VERIFIED": "false"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
