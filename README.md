@@ -79,7 +79,7 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 - **Build environment variable:** `NODE_VERSION=22` (also recorded in `.node-version`).
 - **Install command, if shown:** `npm ci`.
 
-This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
+This repository has a CI validation workflow but no application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
 
 The Wrangler config enables only the default `workers.dev` endpoint; it does not attach a production domain or change DNS. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account.
 
