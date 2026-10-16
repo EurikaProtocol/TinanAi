@@ -31,7 +31,7 @@ No real provider credentials were available during implementation, so provider i
 
 ## Cloudflare Workers
 
-This project uses `@opennextjs/cloudflare@1.19.11` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.18 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). The adapter version was chosen instead of `1.20.11` because the latter added npm audit findings in this repository's lockfile. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
+This project uses `@opennextjs/cloudflare@1.20.2` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.21 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). Version 1.20.2 fixes an adapter vulnerability where cached requests with encoded paths could bypass middleware protection. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
 
 Project metadata, tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the project-store module between operations to simulate separate requests and a Worker restart.
 
@@ -81,7 +81,24 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 
 This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
 
-The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
+The Wrangler config enables only the default `workers.dev` endpoint; it does not attach a production domain or change DNS. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account.
+
+### Attach `tinaneureka.com` after deployment
+
+No Cloudflare account or DNS zone was accessible from this environment, so existing DNS records and zone ownership could not be inspected. Do not change nameservers or delete, replace, or repurpose existing records as part of this setup.
+
+After creating the D1/R2 resources, applying the D1 migration, configuring Worker secrets, deploying, and verifying the `workers.dev` endpoint:
+
+1. Confirm `tinaneureka.com` is an active zone in the same Cloudflare account as the Worker. If it is not, stop and get approval before changing nameservers or moving DNS management.
+2. Review the zone's existing apex (`tinaneureka.com`) DNS records and their purpose. If the hostname already has conflicting records or services, do not remove or overwrite them without explicit authorization.
+3. In **Workers & Pages → Workers → `tinanai2` → Settings → Domains & Routes**, choose **Add → Custom Domain** and enter `tinaneureka.com`. Review Cloudflare's proposed DNS changes before confirming. Cloudflare provisions the Worker custom-domain DNS record and TLS certificate; do not guess or manually copy a `workers.dev` target.
+4. Verify HTTPS, authentication, the public homepage, and authenticated application/API routes at `https://tinaneureka.com`.
+
+The apex hostname is the only custom domain requested here. Add `www.tinaneureka.com` as a separate custom domain only if it is desired and its existing DNS records have also been reviewed. Cloudflare's Custom Domain flow, not a static record copied into this repository, supplies the account-specific DNS configuration.
+
+### GitHub Actions checks
+
+The `.github/workflows/ci.yml` workflow runs the existing tests, lint, typecheck, and Cloudflare production build on pull requests and pushes to `main`. It performs checks only; Cloudflare account credentials and runtime secrets are not available to GitHub Actions and no deployment is triggered by this workflow.
 
 ### Worker runtime settings
 
@@ -162,7 +179,7 @@ This live test has not been run from this environment. A successful mocked unit 
 This repository has no application deployment workflow; the visible GitHub Actions workflows are Copilot automations, not application deployment. Configure the environment on the actual Next.js hosting platform. Do not deploy or change DNS until the owner explicitly approves. All items below remain required before production use:
 
 - [ ] Replace single-owner Basic Auth with the selected production identity provider before multi-user use; preserve server-side ownership checks, origin protections, and HTTPS.
-- [ ] Create the Cloudflare D1 database and R2 bucket listed in the Cloudflare Workers section, replace the placeholder D1 ID in `wrangler.jsonc`, apply migrations remotely, and verify persistence in a staging Worker across deploy/restart.
+- [ ] Create the Cloudflare D1 database and R2 bucket listed in the Cloudflare Workers section, add the actual D1 `database_id` returned by Wrangler to `wrangler.jsonc`, apply migrations remotely, and verify persistence in a staging Worker across deploy/restart. The repository intentionally has no fabricated database ID.
 - [ ] Configure D1/R2 backups, retention, restore drills, and distributed rate limits before production. Existing filesystem-only projects require a separately planned migration.
 - [ ] Configure host-side server-only secrets: `TINAN_AUTH_USERNAME`, a strong `TINAN_AUTH_PASSWORD`, `TINAN_AI_PROVIDER=openai-compatible`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL`; the default `TINAN_AI_BASE_URL` is `https://openrouter.ai/api/v1`, with `TINAN_AI_TIMEOUT_MS` optional. Map the existing OpenRouter secret into `TINAN_AI_API_KEY` in the application host’s secret manager; GitHub Actions secrets do not automatically reach the running app. Keep file reading disabled unless specifically required and authorized.
 - [ ] Keep project execution disabled. Any future execution feature needs a separately reviewed isolated execution service; do not enable it by setting a flag or exposing Docker to the Worker.
@@ -170,6 +187,7 @@ This repository has no application deployment workflow; the visible GitHub Actio
 - [ ] Configure distributed rate limits and execution budgets, provider and sandbox timeouts, structured redacted audit logs, metrics/alerts, error tracking, and operational runbooks. Ensure logs never contain provider keys or sensitive project contents.
 - [ ] Validate generation, file persistence, export, authorization/isolation, backup restoration, sandbox checks, cancellation, and failure recovery in staging. Run dependency/security checks and production build before requesting deployment approval.
 - [ ] Prepare a rollback plan and verify backups and monitoring before any approved release.
+- [ ] After the Worker is deployed and verified, attach `tinaneureka.com` as a Worker Custom Domain using the procedure above. Inspect current zone records first; Cloudflare's Custom Domain setup creates the needed DNS record, and no existing record or nameserver should be changed without approval.
 
 ## Dependency audit
 
