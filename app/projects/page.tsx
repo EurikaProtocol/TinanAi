@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
+import { isActiveProjectTaskStatus, isCancellableProjectTaskStatus, type ProjectTaskStatus } from '@/lib/builder/task-status';
 
 type Project = {
   id: string;
@@ -28,7 +29,8 @@ type Project = {
 type BuilderTask = {
   id: string;
   projectId: string | null;
-  status: 'generating' | 'committing' | 'completed' | 'failed' | 'cancelled';
+  status: ProjectTaskStatus;
+  plan: { summary: string; technology: string[]; features: string[]; steps: string[] } | null;
   progress: string[];
   errors: string[];
   kind: 'generation' | 'repair' | 'check';
@@ -71,7 +73,7 @@ export default function ProjectsPage() {
       if (!response.ok) throw new Error(payload.error || 'Could not update task status.');
       const updated = payload.task as BuilderTask;
       setTask(updated);
-      if (updated.status !== 'generating' && updated.status !== 'committing') {
+      if (!isActiveProjectTaskStatus(updated.status)) {
         await refreshProjects();
         if (updated.kind === 'generation' && updated.status === 'completed' && updated.projectId) {
           setSelectedId(updated.projectId);
@@ -83,7 +85,7 @@ export default function ProjectsPage() {
   }, [refreshProjects]);
 
   useEffect(() => {
-    if (!task || (task.status !== 'generating' && task.status !== 'committing')) return;
+    if (!task || !isActiveProjectTaskStatus(task.status)) return;
     const timer = window.setInterval(() => void refreshTask(task.id), 1000);
     return () => window.clearInterval(timer);
   }, [task, refreshTask]);
@@ -113,20 +115,20 @@ export default function ProjectsPage() {
     }
   }
 
-  async function runCheck(check: string) {
-    if (!selectedId) return;
+  async function respondToPlan(approved: boolean) {
+    if (!task) return;
     setError('');
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(selectedId)}/checks`, {
+      const response = await fetch(`/api/projects/tasks/${encodeURIComponent(task.id)}/approval`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ check }),
+        body: JSON.stringify({ approved }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || 'Sandbox check could not start.');
+      if (!response.ok) throw new Error(payload.error || 'Project plan approval could not be recorded.');
       setTask(payload.task as BuilderTask);
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : 'Sandbox check could not start.');
+      setError(requestError instanceof Error ? requestError.message : 'Project plan approval could not be recorded.');
     }
   }
 
@@ -181,18 +183,18 @@ export default function ProjectsPage() {
   return (
     <main className="builder-shell">
       <header className="builder-topbar">
-        <Link className="builder-brand" href="/"><span className="brand-mark">T</span><strong>TINAN <span>ULTRA</span></strong></Link>
+        <Link className="builder-brand" href="/"><span className="brand-mark">T</span><strong>TINAN <span>AI</span></strong></Link>
         <div className="builder-breadcrumb"><Link href="/">Workspace</Link><span>/</span><strong>Project Builder</strong></div>
-        <span className="builder-status"><i /> Server-side generation</span>
+        <span className="builder-status"><i /> Plan review before generation</span>
       </header>
 
       <section className="builder-intro">
         <div>
           <div className="eyebrow"><span className="eyebrow-line" />TINAN AI ULTRA</div>
           <h1>From idea to workspace.</h1>
-          <p>Describe what you want to build. Review the specification, generated files, and isolated check results.</p>
+          <p>Describe what you want to build. Review a provider-generated plan before approving source generation.</p>
         </div>
-        <div className="builder-safety"><span>⌑</span> Generation requires a configured AI provider. Checks run only in a digest-pinned, network-isolated Docker sandbox.</div>
+        <div className="builder-safety"><span>⌑</span> Plan and generation require a configured server-side AI provider. Generated code is never executed here; validation is unavailable.</div>
       </section>
 
       {error && <div className="builder-error" role="alert">{error}<button type="button" onClick={() => setError('')}>Dismiss</button></div>}
@@ -209,7 +211,7 @@ export default function ProjectsPage() {
               <span className="project-list-icon">◇</span><span><strong>{project.name}</strong><small>{project.technology.slice(0, 2).join(' · ') || 'Project workspace'}</small></span>
             </button>
           ))}
-          <div className="project-storage-note">Single-owner sign-in · local server storage · no database</div>
+          <div className="project-storage-note">Single-owner access · D1/R2 bindings required; production storage is not verified</div>
         </aside>
 
         <section className="builder-main">
@@ -226,17 +228,29 @@ export default function ProjectsPage() {
             />
             <div className="requirements-footer">
               <span>Up to 8,000 characters · Model output is validated before writing.</span>
-              <button className="builder-submit" disabled={!requirements.trim() || isSubmitting || task?.status === 'generating' || task?.status === 'committing'} type="submit">
-                {isSubmitting ? 'Starting…' : selectedId ? 'Generate changes' : 'Generate project'} <span>↗</span>
+              <button className="builder-submit" disabled={!requirements.trim() || isSubmitting || (task !== null && isActiveProjectTaskStatus(task.status))} type="submit">
+                {isSubmitting ? 'Preparing plan…' : selectedId ? 'Plan project changes' : 'Create project plan'} <span>↗</span>
               </button>
+              <span className="approval-cost-note">Planning contacts your configured provider; source generation waits for your approval.</span>
             </div>
           </form>
 
           {task && (
             <section className="builder-task-card" aria-live="polite">
-              <div className="builder-task-head"><div><span className={`task-state-dot ${task.status}`} /><strong>{task.kind === 'check' ? `${task.check} sandbox check` : 'Project generation'}</strong><small>{task.status.toUpperCase()}</small></div>
-                {task.status === 'generating' && <button type="button" onClick={cancelTask}>Cancel</button>}
+              <div className="builder-task-head"><div><span className={`task-state-dot ${task.status}`} /><strong>{task.kind === 'check' ? `${task.check} validation` : 'Project request'}</strong><small>{task.status.replace('_', ' ').toUpperCase()}</small></div>
+                {isCancellableProjectTaskStatus(task.status) && <button type="button" onClick={cancelTask}>Cancel</button>}
               </div>
+              {task.plan && <div className="project-plan-review">
+                <strong>REVIEW PROVIDER PLAN</strong>
+                <p>{task.plan.summary}</p>
+                <div><b>Technology</b>{task.plan.technology.join(' · ')}</div>
+                <div><b>Features</b>{task.plan.features.map((feature) => <span key={feature}>{feature}</span>)}</div>
+                <ol>{task.plan.steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ol>
+                {task.status === 'awaiting_approval' && <div className="approval-actions">
+                  <button type="button" onClick={() => void respondToPlan(true)}>Approve and generate files</button>
+                  <button type="button" onClick={() => void respondToPlan(false)}>Decline plan</button>
+                </div>}
+              </div>}
               <ol>{task.progress.map((message, index) => <li key={`${task.id}-${index}`}>{message}</li>)}</ol>
               {task.errors.map((message, index) => <p className="builder-error inline" key={`${task.id}-error-${index}`}>{message}</p>)}
             </section>
@@ -246,7 +260,6 @@ export default function ProjectsPage() {
             <ProjectWorkspace
               onOpenFile={openFile}
               onRollback={rollback}
-              onRunCheck={runCheck}
               onRequestRepair={requestRepair}
               project={selectedProject}
               selectedFile={selectedFile}
@@ -256,13 +269,13 @@ export default function ProjectsPage() {
             <section className="builder-empty-state">
               <span className="builder-empty-glyph">✳</span>
               <h2>A real project starts with a clear brief.</h2>
-              <p>Generated files will be stored in an isolated workspace with reviewable changes and explicit check results.</p>
+              <p>Approve a structured provider plan before source generation. Files are validated and stored for review; execution remains disabled.</p>
               <div><span>01</span> Project specification <span>02</span> Task plan <span>03</span> Source tree</div>
             </section>
           )}
         </section>
       </div>
-      <footer className="builder-footer"><span>✳ &nbsp;Intelligence, with intention.</span><span>Preview is not launched · Deployment is never automatic</span></footer>
+      <footer className="builder-footer"><span>✳ &nbsp;Intelligence, with intention.</span><span>Execution unavailable · Deployment is not configured</span></footer>
     </main>
   );
 }
@@ -272,7 +285,6 @@ function ProjectWorkspace({
   selectedFile,
   fileContent,
   onOpenFile,
-  onRunCheck,
   onRequestRepair,
   onRollback,
 }: {
@@ -280,7 +292,6 @@ function ProjectWorkspace({
   selectedFile: string;
   fileContent: string;
   onOpenFile: (file: string) => void;
-  onRunCheck: (check: string) => void;
   onRequestRepair: () => void;
   onRollback: () => void;
 }) {
@@ -288,7 +299,7 @@ function ProjectWorkspace({
     <section className="project-workspace">
       <div className="project-summary">
         <div><div className="section-kicker">PROJECT SPECIFICATION</div><h2>{project.name}</h2><p>{project.specification}</p></div>
-        <div className="project-actions"><a href={`/api/projects/${encodeURIComponent(project.id)}/export`}>Export .tar.gz</a><button type="button" onClick={onRollback}>Rollback last generation</button></div>
+        <div className="project-actions"><a href={`/api/projects/${encodeURIComponent(project.id)}/export`}>Export .zip</a><button type="button" onClick={onRollback}>Rollback last generation</button></div>
         <div className="technology-tags">{project.technology.map((item) => <span key={item}>{item}</span>)}</div>
         <div className="task-plan-list"><strong>BUILD PLAN</strong>{project.tasks.map((item, index) => <p key={`${index}-${item}`}><span>{String(index + 1).padStart(2, '0')}</span>{item}</p>)}</div>
       </div>
@@ -315,14 +326,14 @@ function ProjectWorkspace({
       </section>
 
       <section className="checks-panel">
-        <div className="inspector-heading"><strong>ISOLATED CHECKS</strong><span>Preview: {project.previewStatus.replace('_', ' ')}</span></div>
-        <div className="check-actions">{checks.map((check) => <button key={check} onClick={() => onRunCheck(check)} type="button">{check}</button>)}</div>
+        <div className="inspector-heading"><strong>VALIDATION</strong><span>Execution unavailable</span></div>
+        <div className="check-actions">{checks.map((check) => <button disabled key={check} title="Generated code is not executed in the Worker. Validation is unavailable until a verified isolated execution service is configured." type="button">{check}</button>)}</div>
         {project.checks.length ? project.checks.map((check, index) => (
           <details className="check-result" key={`${check.timestamp}-${index}`}>
             <summary><span className={`check-status ${check.status}`}>{check.status}</span><strong>{check.check}</strong><time>{new Date(check.timestamp).toLocaleString()}</time></summary>
             <pre>{check.output || 'No output.'}</pre>
           </details>
-        )) : <p className="no-diff">Checks require Docker plus a pre-pulled digest-pinned sandbox image. No preview or build is claimed.</p>}
+        )) : <p className="no-diff">Validation cannot safely execute generated code in this Worker. Configure and verify an isolated execution service before enabling these checks. Preview: {project.previewStatus.replace('_', ' ')}.</p>}
         {project.checks[0]?.status === 'failed' && project.repairAttempts < 1 && (
           <button className="repair-button" type="button" onClick={onRequestRepair}>Attempt one AI repair</button>
         )}

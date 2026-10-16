@@ -18,8 +18,8 @@ export async function GET(request: Request, context: Context) {
     const safeName = project.name.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || 'project';
     return new Response(archive, {
       headers: {
-        'Content-Type': 'application/gzip',
-        'Content-Disposition': `attachment; filename="${safeName}.tar.gz"`,
+        'Content-Type': 'application/zip',
+        'Content-Disposition': `attachment; filename="${safeName}.zip"`,
         'Content-Length': String(archive.byteLength),
         'Cache-Control': 'no-store',
       },

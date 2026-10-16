@@ -32,6 +32,9 @@ function unauthorized(): Response {
 }
 
 export async function middleware(request: NextRequest): Promise<Response> {
+  if (request.nextUrl.pathname === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
+    return NextResponse.next();
+  }
   const username = process.env.TINAN_AUTH_USERNAME;
   const password = process.env.TINAN_AUTH_PASSWORD;
   if (!username || !password || username.length > 128 || password.length < 32 || password.length > 4096) {

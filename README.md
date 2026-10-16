@@ -1,6 +1,6 @@
 # TINAN AI
 
-TINAN AI is an early-stage agent workspace built on Next.js App Router, React, and TypeScript.
+TINAN AI is an AI-assisted project workspace built on Next.js App Router, React, and TypeScript. The public homepage is available at `/`; `/workspace`, `/projects`, and all API routes require the configured single-owner HTTP Basic Auth credentials.
 
 ## Agent core
 
@@ -20,7 +20,7 @@ All provider secrets are server-only. Do not prefix these values with `NEXT_PUBL
 | `TINAN_AI_PROVIDER` | No | `demo` (default) or `openai-compatible`. |
 | `TINAN_AI_API_KEY` | For real provider | API key, read only by server code. |
 | `TINAN_AI_MODEL` | For real provider | Model identifier supported by the configured endpoint. |
-| `TINAN_AI_BASE_URL` | No | OpenAI-compatible API base URL; defaults to `https://api.openai.com/v1`. HTTPS is required except for localhost development. |
+| `TINAN_AI_BASE_URL` | No | OpenAI-compatible API base URL; defaults to `https://openrouter.ai/api/v1`. HTTPS is required except for localhost development. |
 | `TINAN_AI_TIMEOUT_MS` | No | Provider timeout from 1,000 to 60,000 ms; defaults to 20,000 ms. |
 | `TINAN_AUTH_USERNAME` | Required | Single-owner Basic Auth username for the application and API. |
 | `TINAN_AUTH_PASSWORD` | Required | Single-owner Basic Auth password; must be at least 32 characters. Set server-side and use HTTPS in production. |
@@ -44,7 +44,7 @@ npx wrangler d1 create tinan-ai-metadata
 npx wrangler r2 bucket create tinan-ai-project-files
 ```
 
-The deployment environment used for this work has no authenticated Cloudflare account, so no real D1 database could be verified or configured. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`), run the commands above in the intended account, and replace the all-zero placeholder `database_id` in `wrangler.jsonc` with the exact ID returned by `npx wrangler d1 create`. Do not deploy while the placeholder remains. Keep the names and binding identifiers aligned with the config:
+The deployment environment used for this work has no authenticated Cloudflare account, so no real D1 database could be verified or configured. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`), run the commands above in the intended account, and set the `database_id` property in the `TINAN_DB` binding in `wrangler.jsonc` to the exact ID returned by `npx wrangler d1 create`. Do not deploy until the binding contains the real ID. Keep the names and binding identifiers aligned with the config:
 
 | Resource | Wrangler binding | Resource name |
 | --- | --- | --- |
@@ -103,21 +103,23 @@ Set the provider to `openai-compatible` only when intentionally enabling paid/cr
 
 ## Project Builder
 
-- Visit `/projects` to submit natural-language requirements. A configured real provider is required; without it, generation fails with a setup message and no project is claimed as generated.
+- Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
 - Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Project metadata/tasks are owner-scoped in D1; source files and rollback snapshots use owner-prefixed R2 keys.
-- Source export is a `.tar.gz` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
-- Project execution and all generated code checks are disabled; check requests return unavailable and never spawn a process or execute model-generated commands.
+- Source export is a `.zip` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
+- Project execution and generated code checks are disabled in the interface and API; requests return unavailable and never spawn a process or execute model-generated commands.
 - After a failed check, one explicit AI repair attempt is available per project. Updates are diffed and the prior source can be restored from the durable R2 snapshot.
 
 ## Persistence and deployment limits
 
-The app and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; requests are challenged before the app runs, unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
+Authenticated app routes and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; the public homepage is intentionally accessible without credentials. Unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
+
+The app sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy` headers. Authentication does not provide a user-management or password-reset flow.
 
 ## Phase 4 verification status
 
-- Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
+- Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small plan-and-approval generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
 - Project checks and execution are disabled by the implementation; no Docker isolation is claimed. `TINAN_SANDBOX_VERIFIED` remains `false`.
-- Tests cover mocked provider responses/failures/timeouts, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, owner filtering, path traversal rejection, task persistence/cancellation, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
+- Tests cover mocked provider responses/failures/timeouts, structured project planning and approval before source generation, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, cleanup retry after R2 errors, owner filtering, path traversal rejection, task persistence/cancellation, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
 
 ### Manual OpenRouter website generation test
 
@@ -148,9 +150,9 @@ curl --fail-with-body --silent --show-error \
   "$APP_ORIGIN/api/projects/$PROJECT_ID" | jq '.project.files'
 curl --fail-with-body --silent --show-error \
   --user "$TINAN_AUTH_USERNAME" \
-  --output tinan-sample-services.tar.gz \
+  --output tinan-sample-services.zip \
   "$APP_ORIGIN/api/projects/$PROJECT_ID/export"
-tar -tzf tinan-sample-services.tar.gz
+unzip -l tinan-sample-services.zip
 ```
 
 This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
@@ -162,7 +164,7 @@ This repository has no application deployment workflow; the visible GitHub Actio
 - [ ] Replace single-owner Basic Auth with the selected production identity provider before multi-user use; preserve server-side ownership checks, origin protections, and HTTPS.
 - [ ] Create the Cloudflare D1 database and R2 bucket listed in the Cloudflare Workers section, replace the placeholder D1 ID in `wrangler.jsonc`, apply migrations remotely, and verify persistence in a staging Worker across deploy/restart.
 - [ ] Configure D1/R2 backups, retention, restore drills, and distributed rate limits before production. Existing filesystem-only projects require a separately planned migration.
-- [ ] Configure host-side server-only secrets: `TINAN_AUTH_USERNAME`, a strong `TINAN_AUTH_PASSWORD`, `TINAN_AI_PROVIDER=openai-compatible`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL`; set `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1` and `TINAN_AI_TIMEOUT_MS` as appropriate. Map the existing OpenRouter secret into `TINAN_AI_API_KEY` in the application host’s secret manager; GitHub Actions secrets do not automatically reach the running app. Keep file reading disabled unless specifically required and authorized.
+- [ ] Configure host-side server-only secrets: `TINAN_AUTH_USERNAME`, a strong `TINAN_AUTH_PASSWORD`, `TINAN_AI_PROVIDER=openai-compatible`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL`; the default `TINAN_AI_BASE_URL` is `https://openrouter.ai/api/v1`, with `TINAN_AI_TIMEOUT_MS` optional. Map the existing OpenRouter secret into `TINAN_AI_API_KEY` in the application host’s secret manager; GitHub Actions secrets do not automatically reach the running app. Keep file reading disabled unless specifically required and authorized.
 - [ ] Keep project execution disabled. Any future execution feature needs a separately reviewed isolated execution service; do not enable it by setting a flag or exposing Docker to the Worker.
 - [ ] Verify HTTPS, security headers, and secure cookie settings on the assigned `workers.dev` endpoint.
 - [ ] Configure distributed rate limits and execution budgets, provider and sandbox timeouts, structured redacted audit logs, metrics/alerts, error tracking, and operational runbooks. Ensure logs never contain provider keys or sensitive project contents.

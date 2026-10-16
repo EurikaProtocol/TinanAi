@@ -1,7 +1,32 @@
-import { generateProject, getOpenAICompatibleConfig, getProviderMode, ProviderError } from '../agent/openai-provider';
-import { acquireProjectLock, beginProjectTaskCommit, createProject, getProject, getProjectTaskForOwner, getProjectTaskSignal, recordProjectCheck, releaseProjectLock, updateProjectTask, writeGeneratedFiles } from './project-store';
+import { createProjectPlan, generateProject, getOpenAICompatibleConfig, getProviderMode, ProviderError } from '../agent/openai-provider';
+import { acquireProjectLock, beginProjectTaskCommit, createProject, getProject, getProjectTaskForOwner, getProjectTaskSignal, recordProjectCheck, releaseProjectLock, setProjectTaskPlan, updateProjectTask, writeGeneratedFiles } from './project-store';
 import { runSandboxCheck } from './sandbox';
 import type { ProjectTask } from './project-store';
+
+export async function runProjectPlanning(
+  task: ProjectTask,
+  planner: typeof createProjectPlan = createProjectPlan,
+): Promise<void> {
+  const signal = getProjectTaskSignal(task.id);
+  try {
+    if (task.status !== 'planning') return;
+    if (getProviderMode() !== 'openai-compatible') {
+      throw new ProviderError('Project planning requires TINAN_AI_PROVIDER=openai-compatible and server-side credentials.');
+    }
+    getOpenAICompatibleConfig();
+    const plan = await planner(task.requirements, signal);
+    const currentTask = await getProjectTaskForOwner(task.id, task.ownerId);
+    if (signal?.aborted || !currentTask || currentTask.status !== 'planning') {
+      if (currentTask) Object.assign(task, currentTask);
+      return;
+    }
+    await setProjectTaskPlan(task, plan);
+  } catch (error) {
+    if (task.status === 'cancelled') return;
+    const message = error instanceof Error ? error.message : 'Project planning failed.';
+    await updateProjectTask(task, 'failed', message.slice(0, 500));
+  }
+}
 
 export async function runProjectGeneration(
   task: ProjectTask,

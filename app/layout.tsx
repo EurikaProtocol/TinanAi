@@ -2,16 +2,16 @@ import './globals.css';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'TINAN AI — Natural Intelligence',
-  description: 'A thoughtful workspace for turning ideas into clear, reviewable plans.',
+  title: 'TINAN AI — Build anything with AI',
+  description: 'Turn your ideas into reviewable project plans and generated web projects with TINAN AI.',
   openGraph: {
     title: 'TINAN AI — Natural Intelligence',
-    description: 'A thoughtful workspace for turning ideas into clear, reviewable plans.',
+    description: 'Turn your ideas into reviewable project plans and generated web projects with TINAN AI.',
   },
   twitter: {
     card: 'summary_large_image',
     title: 'TINAN AI — Natural Intelligence',
-    description: 'A thoughtful workspace for turning ideas into clear, reviewable plans.',
+    description: 'Turn your ideas into reviewable project plans and generated web projects with TINAN AI.',
   },
 };
 

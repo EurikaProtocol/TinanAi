@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { GeneratedProject } from '../agent/openai-provider';
+import type { GeneratedProject, ProjectPlan } from '../agent/openai-provider';
+import type { ProjectTaskStatus } from './task-status';
 import { getProjectStorageBindings } from './cloudflare-storage';
 
 export type ProjectRecord = {
@@ -32,8 +33,9 @@ export type ProjectTask = {
   kind: 'generation' | 'repair' | 'check';
   projectId: string | null;
   requirements: string;
+  plan: ProjectPlan | null;
   check: string | null;
-  status: 'generating' | 'committing' | 'completed' | 'failed' | 'cancelled';
+  status: ProjectTaskStatus;
   progress: string[];
   errors: string[];
   createdAt: string;
@@ -42,7 +44,7 @@ export type ProjectTask = {
 
 type ProjectRow = { record_json: string };
 type TaskRow = { record_json: string };
-type BackupRow = { snapshot_id: string; files_json: string };
+type BackupRow = { project_id: string; owner_id: string; snapshot_id: string; files_json: string };
 
 type ProjectRuntime = {
   controllers: Map<string, AbortController>;
@@ -121,6 +123,7 @@ export async function createProjectTask(
   kind: ProjectTask['kind'] = 'generation',
   projectId: string | null = null,
   check: string | null = null,
+  initialStatus: ProjectTask['status'] = 'generating',
 ): Promise<ProjectTask> {
   if (projectId && !await getProjectForOwner(projectId, ownerId)) throw new Error('Project not found.');
   const now = new Date().toISOString();
@@ -130,9 +133,10 @@ export async function createProjectTask(
     kind,
     projectId,
     requirements,
+    plan: null,
     check,
-    status: 'generating',
-    progress: ['Project generation requested.'],
+    status: initialStatus,
+    progress: [initialStatus === 'planning' ? 'Project planning requested.' : 'Project task requested.'],
     errors: [],
     createdAt: now,
     updatedAt: now,
@@ -155,7 +159,7 @@ export async function getProjectTask(id: string, ownerId: string): Promise<Proje
   try {
     const task = JSON.parse(row.record_json) as ProjectTask;
     if (task.id !== id || task.ownerId !== ownerId) return undefined;
-    if (['generating', 'committing'].includes(task.status) &&
+    if (['planning', 'generating', 'committing'].includes(task.status) &&
         Date.parse(task.updatedAt) < Date.now() - 15 * 60 * 1000) {
       task.status = 'failed';
       task.progress.push('Task was marked failed after its Worker execution did not resume.');
@@ -224,13 +228,57 @@ export function getProjectTaskSignal(id: string): AbortSignal | undefined {
   return runtime().controllers.get(id)?.signal;
 }
 
+export async function setProjectTaskPlan(task: ProjectTask, plan: ProjectPlan): Promise<boolean> {
+  const stored = await getProjectTask(task.id, task.ownerId);
+  if (!stored || stored.status !== 'planning') {
+    if (stored) Object.assign(task, stored);
+    return false;
+  }
+  const next: ProjectTask = {
+    ...stored,
+    plan,
+    status: 'awaiting_approval',
+    progress: stored.progress.concat('Project plan is ready for your review and approval.'),
+    updatedAt: new Date().toISOString(),
+  };
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    "UPDATE project_tasks SET record_json = ?, status = 'awaiting_approval', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'planning'",
+  ).bind(JSON.stringify(next), next.updatedAt, task.id, task.ownerId).run();
+  if (!result.meta?.changes) {
+    const current = await getProjectTask(task.id, task.ownerId);
+    if (current) Object.assign(task, current);
+    return false;
+  }
+  Object.assign(task, next);
+  return true;
+}
+
+export async function approveProjectTask(id: string, ownerId: string): Promise<ProjectTask | undefined> {
+  const task = await getProjectTask(id, ownerId);
+  if (!task || task.status !== 'awaiting_approval') return task;
+  const next: ProjectTask = {
+    ...task,
+    status: 'generating',
+    progress: task.progress.concat('Project plan approved; source generation started.'),
+    updatedAt: new Date().toISOString(),
+  };
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    "UPDATE project_tasks SET record_json = ?, status = 'generating', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'awaiting_approval'",
+  ).bind(JSON.stringify(next), next.updatedAt, id, ownerId).run();
+  if (!result.meta?.changes) return undefined;
+  Object.assign(task, next);
+  return task;
+}
+
 export async function updateProjectTask(
   task: ProjectTask,
   status: ProjectTask['status'],
   message: string,
 ): Promise<void> {
   const stored = await getProjectTask(task.id, task.ownerId);
-  if (!stored || (stored.status !== 'generating' && stored.status !== 'committing')) {
+  if (!stored || (stored.status !== 'planning' && stored.status !== 'generating' && stored.status !== 'committing')) {
     if (stored) Object.assign(task, stored);
     return;
   }
@@ -244,7 +292,7 @@ export async function updateProjectTask(
   };
   const { TINAN_DB } = await getProjectStorageBindings();
   const result = await TINAN_DB.prepare(
-    "UPDATE project_tasks SET project_id = ?, record_json = ?, status = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status IN ('generating', 'committing')",
+    "UPDATE project_tasks SET project_id = ?, record_json = ?, status = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND status IN ('planning', 'generating', 'committing')",
   ).bind(next.projectId, JSON.stringify(next), status, next.updatedAt, task.id, task.ownerId).run();
   if (!result.meta?.changes) {
     const current = await getProjectTask(task.id, task.ownerId);
@@ -283,17 +331,19 @@ export async function beginProjectTaskCommit(task: ProjectTask, message: string)
 export async function cancelProjectTask(id: string, ownerId: string): Promise<ProjectTask | undefined> {
   const task = await getProjectTask(id, ownerId);
   if (!task) return undefined;
-  if (task.status === 'generating') {
+  if (task.status === 'planning' || task.status === 'awaiting_approval' || task.status === 'generating') {
     const updated: ProjectTask = {
       ...task,
       status: 'cancelled',
-      progress: task.progress.concat('Generation cancelled by the user.'),
+      progress: task.progress.concat(task.status === 'awaiting_approval'
+        ? 'Project plan declined by the user.'
+        : 'Project task cancelled by the user.'),
       updatedAt: new Date().toISOString(),
     };
     const { TINAN_DB } = await getProjectStorageBindings();
     const result = await TINAN_DB.prepare(
-      "UPDATE project_tasks SET record_json = ?, status = 'cancelled', updated_at = ? WHERE id = ? AND owner_id = ? AND status = 'generating'",
-    ).bind(JSON.stringify(updated), updated.updatedAt, id, ownerId).run();
+      "UPDATE project_tasks SET record_json = ?, status = 'cancelled', updated_at = ? WHERE id = ? AND owner_id = ? AND status = ?",
+    ).bind(JSON.stringify(updated), updated.updatedAt, id, ownerId, task.status).run();
     if (result.meta?.changes) {
       runtime().controllers.get(id)?.abort();
       runtime().controllers.delete(id);
@@ -360,6 +410,7 @@ export async function createProject(generated: GeneratedProject, ownerId: string
 
 export async function listProjects(ownerId: string): Promise<ProjectRecord[]> {
   const { TINAN_DB } = await getProjectStorageBindings();
+  await cleanupUnreferencedProjectSnapshots(ownerId);
   const result = await TINAN_DB.prepare(
     'SELECT record_json FROM projects WHERE owner_id = ? ORDER BY updated_at DESC LIMIT 50',
   ).bind(ownerId).all<ProjectRow>();
@@ -371,6 +422,20 @@ export async function listProjects(ownerId: string): Promise<ProjectRecord[]> {
       return [];
     }
   });
+}
+
+async function cleanupUnreferencedProjectSnapshots(ownerId: string): Promise<void> {
+  const { TINAN_DB } = await getProjectStorageBindings();
+  const result = await TINAN_DB.prepare(
+    'SELECT project_id, owner_id, snapshot_id, files_json FROM project_backups WHERE owner_id = ? LIMIT 1000',
+  ).bind(ownerId).all<BackupRow>();
+  for (const backup of result.results ?? []) {
+    try {
+      await deleteSnapshotIfUnreferenced(backup.project_id, ownerId, backup.snapshot_id);
+    } catch {
+      // Leave failed cleanup metadata available for the next project-list request.
+    }
+  }
 }
 
 export async function getProject(id: string, ownerId: string): Promise<ProjectRecord | undefined> {
@@ -517,10 +582,11 @@ export async function rollbackProject(id: string, ownerId: string): Promise<Proj
   await TINAN_DB.prepare(
     'UPDATE projects SET record_json = ?, rollback_snapshot_id = NULL, updated_at = ? WHERE id = ? AND owner_id = ?',
   ).bind(JSON.stringify(record), record.updatedAt, id, ownerId).run();
-  await TINAN_DB.prepare(
-    'DELETE FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
-  ).bind(id, ownerId, snapshotId).run();
-  await TINAN_PROJECT_FILES.delete(files.map((relative) => snapshotKey(ownerId, id, snapshotId, relative)));
+  try {
+    await deleteSnapshotIfUnreferenced(id, ownerId, snapshotId);
+  } catch {
+    // Keep backup metadata so a later cleanup can finish after a transient R2 failure.
+  }
   return record;
 }
 
@@ -585,10 +651,11 @@ export async function writeGeneratedFiles(
         await TINAN_PROJECT_FILES.delete(metadataKey(ownerId, id, relative));
       }
     }
-    await TINAN_DB.prepare(
-      'DELETE FROM project_backups WHERE project_id = ? AND owner_id = ? AND snapshot_id = ?',
-    ).bind(id, ownerId, snapshotId).run();
-    await TINAN_PROJECT_FILES.delete(record.files.map((relative) => snapshotKey(ownerId, id, snapshotId, relative)));
+    try {
+      await deleteSnapshotIfUnreferenced(id, ownerId, snapshotId);
+    } catch {
+      // Keep backup metadata so a later cleanup can finish after a transient R2 failure.
+    }
     throw error;
   }
   if (supersededSnapshotId && supersededSnapshotId !== snapshotId) {
