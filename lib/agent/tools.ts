@@ -64,7 +64,7 @@ const registry: Record<string, RegisteredTool> = {
       return {
         tool: 'tasks.track',
         status: 'completed',
-        summary: 'Recorded this task and its current state in the process-local task history.',
+        summary: 'Recorded this task and its current state in durable task history.',
         data: { id: context.task.id, status: context.task.status },
       };
     },

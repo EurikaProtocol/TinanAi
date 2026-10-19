@@ -9,7 +9,7 @@ export async function POST(request: Request, context: RouteContext) {
   const ownerId = getRequestOwnerId(request);
   if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
   const { id } = await context.params;
-  const task = getTaskForOwner(id, ownerId);
+  const task = await getTaskForOwner(id, ownerId);
   if (!task) return NextResponse.json({ error: 'Task not found.' }, { status: 404 });
   let body: unknown;
   try {
@@ -21,7 +21,8 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: 'An approved boolean is required.' }, { status: 400 });
   }
   try {
-    recordApproval(id, body.approved, ownerId);
+    const approvedTask = await recordApproval(id, body.approved, ownerId);
+    Object.assign(task, approvedTask);
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : 'Approval could not be recorded.' }, { status: 409 });
   }

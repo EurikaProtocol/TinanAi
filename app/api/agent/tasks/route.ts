@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     provider = 'unconfigured';
     providerConfigured = false;
   }
-  return NextResponse.json({ provider, providerConfigured, persistence: 'process-memory' });
+  return NextResponse.json({ provider, providerConfigured, persistence: 'cloudflare-d1' });
 }
 
 export async function POST(request: Request) {
@@ -72,11 +72,15 @@ export async function POST(request: Request) {
     : [];
   const authorizedPaths = process.env.TINAN_ENABLE_FILE_READING === 'true' ? requestedPaths : [];
   const task = createTaskRecord(randomUUID(), objective, provider, authorizedPaths, ownerId);
-  createTask(task);
+  try {
+    await createTask(task);
+  } catch {
+    return NextResponse.json({ error: 'Durable task storage is unavailable.' }, { status: 503 });
+  }
 
   after(() => planTask(task));
   return NextResponse.json(
-    { provider, simulated: provider === 'demo', task, persistence: 'process-memory' },
+    { provider, simulated: provider === 'demo', task, persistence: 'cloudflare-d1' },
     { status: 202 },
   );
 }
