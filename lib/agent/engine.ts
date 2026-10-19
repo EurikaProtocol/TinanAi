@@ -75,17 +75,12 @@ export async function planTask(task: AgentTask): Promise<void> {
 }
 
 export async function approveAndExecute(task: AgentTask): Promise<void> {
-  if (task.status !== 'awaiting_approval') return;
-  if (task.simulated) {
-    if (!await moveTask(task, 'executing', 'Approval recorded; demo mode still performs no tool execution.')) return;
-    await moveTask(task, 'completed', 'Simulated task completed without external actions.');
-    return;
-  }
-  await executePlannedTools(task);
+  if (task.status !== 'executing') return;
+  await executePlannedTools(task, true);
 }
 
-async function executePlannedTools(task: AgentTask): Promise<void> {
-  if (!await moveTask(task, 'executing', task.simulated
+async function executePlannedTools(task: AgentTask, alreadyExecuting = false): Promise<void> {
+  if (!alreadyExecuting && !await moveTask(task, 'executing', task.simulated
     ? 'Demo plan is simulated; no tools will be run.'
     : 'Executing only registered, permission-checked tools.')) return;
 

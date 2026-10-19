@@ -157,12 +157,12 @@ export async function recordApproval(id: string, approved: boolean, ownerId: str
   const updatedAt = new Date().toISOString();
   const next: AgentTask = {
     ...task,
-    status: approved ? task.status : 'cancelled',
+    status: approved ? 'executing' : 'cancelled',
     updatedAt,
     approvalHistory: task.approvalHistory.concat({ approved, timestamp: updatedAt }),
-    progressEvents: approved ? task.progressEvents : task.progressEvents.concat({
-      status: 'cancelled',
-      message: 'User declined the requested approval.',
+    progressEvents: task.progressEvents.concat({
+      status: approved ? 'executing' : 'cancelled',
+      message: approved ? 'User approved the plan; execution started.' : 'User declined the requested approval.',
       timestamp: updatedAt,
     }),
   };

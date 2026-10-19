@@ -6,7 +6,7 @@ const { mkdtemp, rm, symlink, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
+const { approveAndExecute, createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
 const {
   createProjectPlan,
   createModelPlan,
@@ -341,9 +341,8 @@ test('task state transitions reject invalid moves and support approval and cance
   assert.equal(await getTaskForOwner(task.id, ownerB), undefined);
   assert.equal((await getTask(task.id)).status, 'planning');
   await transitionTask(task.id, 'awaiting_approval', 'Needs review.');
-  await recordApproval(task.id, true, ownerA);
+  assert.equal((await recordApproval(task.id, true, ownerA)).status, 'executing');
   await assert.rejects(recordApproval(task.id, true, ownerA), /already been handled/);
-  await transitionTask(task.id, 'executing', 'Approved.');
   await transitionTask(task.id, 'completed', 'Finished.');
   await assert.rejects(transitionTask(task.id, 'executing', 'Invalid reversal.'), /Invalid task transition/);
 
@@ -352,6 +351,17 @@ test('task state transitions reject invalid moves and support approval and cance
   assert.equal((await cancelTask(cancelled.id, ownerA)).status, 'cancelled');
   assert.equal((await getTask(cancelled.id)).status, 'cancelled');
   assert.equal(await cancelTask(cancelled.id, ownerB), undefined);
+});
+
+test('agent approval atomically starts execution and completes the approved task', async () => {
+  const task = createTaskRecord('00000000-0000-4000-8000-000000000005', 'approved demo task', 'demo', [], ownerA);
+  await createTask(task);
+  await transitionTask(task.id, 'awaiting_approval', 'Needs review.');
+  const approved = await recordApproval(task.id, true, ownerA);
+  assert.equal(approved.status, 'executing');
+  await approveAndExecute(approved);
+  assert.equal((await getTaskForOwner(task.id, ownerA)).status, 'completed');
+  assert.equal((await getTaskForOwner(task.id, ownerA)).approvalHistory.length, 1);
 });
 
 test('agent task records survive store reloads and stale concurrent updates cannot overwrite task state', async () => {
