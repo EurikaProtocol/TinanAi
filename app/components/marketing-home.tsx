@@ -1,4 +1,7 @@
+'use client';
+
 import Link from 'next/link';
+import { useEffect, useRef, useState } from 'react';
 
 const features = [
   {
@@ -40,14 +43,33 @@ const features = [
 ];
 
 const examples = [
-  { name: 'Business website', type: 'PRESENT YOUR BUSINESS', accent: 'cyan', shape: 'business' },
-  { name: 'Services website', type: 'MAKE YOUR OFFER CLEAR', accent: 'blue', shape: 'services' },
-  { name: 'E-commerce store', type: 'SHOWCASE A CATALOG', accent: 'purple', shape: 'store' },
-  { name: 'SaaS landing page', type: 'INTRODUCE A PRODUCT', accent: 'cyan', shape: 'saas' },
-  { name: 'Product dashboard', type: 'ORGANIZE A WORKFLOW', accent: 'blue', shape: 'dashboard' },
+  { id: 'business', name: 'Business website', type: 'PRESENT YOUR BUSINESS', accent: 'cyan', shape: 'business' },
+  { id: 'services', name: 'Services website', type: 'MAKE YOUR OFFER CLEAR', accent: 'blue', shape: 'services' },
+  { id: 'ecommerce', name: 'E-commerce store', type: 'SHOWCASE A CATALOG', accent: 'purple', shape: 'store' },
+  { id: 'saas', name: 'SaaS landing page', type: 'INTRODUCE A PRODUCT', accent: 'cyan', shape: 'saas' },
+  { id: 'dashboard', name: 'Product dashboard', type: 'ORGANIZE A WORKFLOW', accent: 'blue', shape: 'dashboard' },
 ];
 
 export default function MarketingHome() {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setMenuOpen(false);
+        menuButton.current?.focus();
+      }
+    }
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [menuOpen]);
+
+  function closeMobileNav() {
+    setMenuOpen(false);
+  }
+
   return (
     <main className="marketing-shell">
       <header className="marketing-nav">
@@ -55,18 +77,33 @@ export default function MarketingHome() {
           <span className="brand-mark">T</span>
           <span>TINAN <b>AI</b></span>
         </Link>
-        <nav aria-label="Main navigation">
-          <Link href="/">Home</Link>
-          <Link href="/projects">Project Builder</Link>
-          <a href="#templates">Templates</a>
-          <a href="#pricing">Pricing</a>
-          <a href="#about">About</a>
-          <a href="#docs">Docs</a>
+        <nav id="marketing-mobile-menu" className="marketing-links" aria-label="Main navigation" data-open={menuOpen}>
+          <Link href="/" onClick={closeMobileNav}>Home</Link>
+          <Link href="/projects" onClick={closeMobileNav}>Project Builder</Link>
+          <a href="#templates" onClick={closeMobileNav}>Templates</a>
+          <a href="#pricing" onClick={closeMobileNav}>Pricing</a>
+          <a href="#about" onClick={closeMobileNav}>About</a>
+          <a href="#docs" onClick={closeMobileNav}>Docs</a>
+          <div className="mobile-nav-actions">
+            <Link className="marketing-signin" href="/workspace" onClick={closeMobileNav}>Sign in</Link>
+            <Link className="marketing-button small" href="/projects" onClick={closeMobileNav}>Get started <span aria-hidden="true">↗</span></Link>
+          </div>
         </nav>
         <div className="marketing-nav-actions">
           <Link className="marketing-signin" href="/workspace">Sign in</Link>
           <Link className="marketing-button small" href="/projects">Get started <span aria-hidden="true">↗</span></Link>
         </div>
+        <button
+          ref={menuButton}
+          className="mobile-menu-toggle"
+          type="button"
+          aria-label={menuOpen ? 'Close navigation menu' : 'Open navigation menu'}
+          aria-expanded={menuOpen}
+          aria-controls="marketing-mobile-menu"
+          onClick={() => setMenuOpen((open) => !open)}
+        >
+          <span aria-hidden="true">{menuOpen ? '×' : '☰'}</span>
+        </button>
       </header>
 
       <section className="marketing-hero">
@@ -143,11 +180,16 @@ export default function MarketingHome() {
       <section className="marketing-section gallery-section" id="templates">
         <div className="section-heading">
           <div><div className="marketing-eyebrow"><i /> WHAT WILL YOU MAKE?</div><h2>One idea, many<br />directions.</h2></div>
-          <p>Explore a few project types to get your imagination moving. These are examples, not generated previews or downloadable templates.</p>
+          <p>Choose a starting brief to carry into Project Builder. The configured provider creates the plan and source after your review.</p>
         </div>
         <div className="project-gallery">
           {examples.map((example, index) => (
-            <article className={`gallery-card ${example.accent} ${example.shape}`} key={example.name}>
+            <Link
+              className={`gallery-card ${example.accent} ${example.shape}`}
+              href={`/projects?template=${example.id}`}
+              aria-label={`Start a ${example.name} project from this example`}
+              key={example.id}
+            >
               <div className="gallery-art" aria-hidden="true">
                 <div className="gallery-mock">
                   <i /><i /><i />
@@ -157,7 +199,7 @@ export default function MarketingHome() {
                 <div className="gallery-orb" />
               </div>
               <div className="gallery-caption"><div><small>{example.type}</small><h3>{example.name}</h3></div><span aria-hidden="true">↗</span></div>
-            </article>
+            </Link>
           ))}
         </div>
       </section>

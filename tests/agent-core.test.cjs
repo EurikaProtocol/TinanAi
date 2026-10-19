@@ -38,6 +38,7 @@ const {
 const { createProjectArchive } = require('../.test-build/lib/builder/archive.js');
 const { runProjectGeneration, runProjectPlanning } = require('../.test-build/lib/builder/runner.js');
 const { runSandboxCheck } = require('../.test-build/lib/builder/sandbox.js');
+const { getProjectTemplate, projectTemplates } = require('../.test-build/lib/builder/templates.js');
 const { isActiveTaskStatus } = require('../.test-build/lib/agent/types.js');
 const postcss = require('postcss');
 const storageModule = require('../.test-build/lib/builder/cloudflare-storage.js');
@@ -120,6 +121,14 @@ const generatedProject = {
 };
 const ownerA = 'a'.repeat(64);
 const ownerB = 'b'.repeat(64);
+
+test('project example templates provide editable briefs and reject unknown identifiers', () => {
+  assert.deepEqual(Object.keys(projectTemplates), ['business', 'services', 'ecommerce', 'saas', 'dashboard']);
+  assert.equal(getProjectTemplate('saas').name, 'SaaS landing page');
+  assert.match(getProjectTemplate('saas').prompt, /landing page/);
+  assert.equal(getProjectTemplate('__proto__'), undefined);
+  assert.equal(getProjectTemplate('unknown'), undefined);
+});
 
 function readZipEntries(archive) {
   const entries = new Map();
