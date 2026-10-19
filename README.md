@@ -4,12 +4,12 @@ TINAN AI is an AI-assisted project workspace built on Next.js App Router, React,
 
 ## Agent core
 
-- `POST /api/agent/tasks` accepts an objective (maximum 2,000 characters) and returns a task ID. `GET /api/agent/tasks/:id` polls status; `/cancel` cancels active work; `/approval` records explicit approval or decline.
+- `POST /api/agent/tasks` accepts an objective (maximum 2,000 characters) and persists the task in D1. `GET /api/agent/tasks/:id` polls status across Worker requests and restarts; `/cancel` cancels active work; `/approval` records explicit approval or decline.
 - `TINAN_AI_PROVIDER` selects `demo` (default) or `openai-compatible`. Demo plans are deterministic and simulated; they never call a model or execute tools.
 - The OpenAI-compatible provider sends server-side requests to `/chat/completions` and validates the returned structured plan. Only the four registered tools can run: `project.info`, `files.read`, `tasks.track`, and `tests.propose`. Test commands are proposals only; no shell commands or file writes are executed.
 - Production/financial/destructive objectives wait for user approval. Approval does not enable unsupported deployment, financial, write, or shell operations.
 - File reading is disabled unless `TINAN_ENABLE_FILE_READING=true` and the user explicitly supplies authorized relative paths in the task request. Paths are checked against traversal, symlinks, secrets, and a 64 KiB limit.
-- The process-local limiter allows 20 task submissions per minute per server process. This is a coarse development safeguard, not a substitute for authenticated, distributed production rate limiting.
+- The process-local limiter allows 20 task submissions per minute per server process. This is a coarse safeguard, not a substitute for authenticated, distributed production rate limiting.
 
 ## Server environment
 
@@ -33,7 +33,7 @@ No real provider credentials were available during implementation, so provider i
 
 This project uses `@opennextjs/cloudflare@1.19.11` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.18 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). The adapter version was chosen instead of `1.20.11` because the latter added npm audit findings in this repository's lockfile. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
 
-Project metadata, tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the project-store module between operations to simulate separate requests and a Worker restart.
+Project metadata, project and agent tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project/task lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the store modules between operations to simulate separate requests and a Worker restart.
 
 ### Provision durable storage
 
@@ -64,9 +64,9 @@ npx wrangler d1 migrations apply tinan-ai-metadata --local
 npm run preview:cloudflare
 ```
 
-Wrangler persists local D1/R2 preview state under the ignored `.wrangler/` directory. Cloudflare production and preview Workers need both bindings configured; the names above are already declared in `wrangler.jsonc`. D1 stores project/task JSON metadata, ownership, check/repair state, and locks. R2 stores source files and durable rollback snapshots. Do not manually expose either binding to browser code.
+Wrangler persists local D1/R2 preview state under the ignored `.wrangler/` directory. Cloudflare production and preview Workers need both bindings configured; the names above are already declared in `wrangler.jsonc`. D1 stores project and agent-task JSON metadata, ownership, check/repair state, and locks. R2 stores source files and durable rollback snapshots. Do not manually expose either binding to browser code.
 
-Project persistence tests verify create, update, retrieve, export, and rollback through newly loaded storage modules against the same D1/R2 backing data. This exercises the durable binding contract across request/module restarts; production Cloudflare account provisioning and remote persistence have not been tested from this environment.
+Project persistence tests verify create, update, retrieve, export, and rollback through newly loaded storage modules against the same D1/R2 backing data. Agent-task tests verify owner-scoped reads, durable transitions, interrupted-task recovery, and compare-and-set behavior across store reloads. These exercise the durable binding contract across request/module restarts; production Cloudflare account provisioning and remote persistence have not been tested from this environment.
 
 ### Workers Builds screen
 
@@ -111,7 +111,7 @@ Set the provider to `openai-compatible` only when intentionally enabling paid/cr
 
 ## Persistence and deployment limits
 
-Authenticated app routes and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; the public homepage is intentionally accessible without credentials. Unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; local process memory holds only transient abort controllers. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
+Authenticated app routes and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; the public homepage is intentionally accessible without credentials. Unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; transient abort controllers and coarse rate-limit counters remain process-local. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
 
 The app sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy` headers. Authentication does not provide a user-management or password-reset flow.
 
@@ -119,7 +119,7 @@ The app sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and
 
 - Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small plan-and-approval generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
 - Project checks and execution are disabled by the implementation; no Docker isolation is claimed. `TINAN_SANDBOX_VERIFIED` remains `false`.
-- Tests cover mocked provider responses/failures/timeouts, structured project planning and approval before source generation, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, cleanup retry after R2 errors, owner filtering, path traversal rejection, task persistence/cancellation, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
+- Tests cover mocked provider responses/failures/timeouts, structured project planning and approval before source generation, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, cleanup retry after R2 errors, owner filtering, path traversal rejection, durable agent/project task persistence and cancellation, stale-update protection, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
 
 ### Manual OpenRouter website generation test
 
@@ -157,16 +157,14 @@ unzip -l tinan-sample-services.zip
 
 This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
 
-## EurekaCore API contract (planned; not implemented)
+## EurekaCore integration contract (v1.0; live integration unverified)
 
-TINAN AI remains a separate service. The following versioned contract is a proposal for a future authenticated EurekaCore-to-TINAN integration; these routes do not currently exist and no end-to-end EurekaCore request has been verified.
+EurekaCore's `docs/TINANAI_INTEGRATION_CONTRACT.md` documents contract v1.0, and its server-only `src/server/tinanai-provider.ts` adapter calls the existing TINAN AI agent API. The integration boundary is implemented in EurekaCore; TINAN AI does not call EurekaCore or expose the proposed `/api/v1/tasks` routes. No duplicate endpoint or unauthenticated proxy is added here.
 
-- **Transport and identity:** HTTPS server-to-server calls only. EurekaCore would authenticate with a bearer token provisioned and rotated through the hosting secret manager (for example, `TINAN_EUREKACORE_API_TOKEN`). The token must never be sent to a browser. TINAN must validate the caller before reading the body; the current application does not issue or accept this service token.
-- **Authorization:** Resolve the authorized owner from the authenticated service identity and its server-side project grants. Check ownership/grants on every project and task read or mutation; never accept a client-supplied owner ID as authorization. Current project/task APIs use the single-owner Basic Auth flow, not this proposed service authorization.
-- **Submit:** `POST /api/v1/tasks`, with `Idempotency-Key` and JSON `{ "kind": "project-plan", "requirements": "..." }` or `{ "kind": "agent-plan", "objective": "..." }`; an optional `projectId` must be authorized. A future implementation should return `202 Accepted` with a task ID, initial status, and request ID. Reusing the same idempotency key for the same caller must not create duplicate work.
-- **Poll:** `GET /api/v1/tasks/{taskId}` returns only the authorized task's ID, kind, status, timestamps, sanitized error (if any), and approved result/authorized file references. Unknown and unauthorized task IDs should not reveal whether another caller's task exists.
-- **Errors and limits:** Validate JSON and size limits; use bounded timeouts; return sanitized `400`, `401/403`, `404`, `409`, `429`, and `5xx` responses with a request ID. Never return provider keys, raw upstream error bodies, or private project files outside authorized references.
-- **Current status:** The existing `/api/agent/tasks` and `/api/projects` endpoints are browser-facing application routes, not this versioned contract. No EurekaCore credentials are configured, and no authorized integration test has been run. Do not describe this contract as an active integration until both endpoints, service authentication, ownership checks, and a real authorized request are implemented and verified.
+- **Submit:** EurekaCore sends `POST /api/agent/tasks` with `{ "objective": "..." }` (maximum 2,000 characters and 16 KiB body), then polls `GET /api/agent/tasks/{id}`. It may send `POST /api/agent/tasks/{id}/cancel` after abort. EurekaCore does not call TINAN AI's approval endpoint; TINAN-side approval is not EurekaCore authorization.
+- **Authentication:** HTTPS server-to-server calls use TINAN AI's HTTP Basic Auth (`TINAN_AUTH_USERNAME` and `TINAN_AUTH_PASSWORD`) and a same-origin `Origin` on non-GET requests. EurekaCore keeps its `TINANAI_BASE_URL`, `TINANAI_USERNAME`, and `TINANAI_PASSWORD` as server-side Worker secrets. TINAN AI still has a single shared owner identity, not per-service grants or multi-user authorization.
+- **Task state and results:** Agent tasks and transitions persist in D1 and are owner-scoped. A Worker interruption leaves active planning/execution tasks recoverable as a persisted failure when next read after the 15-minute stale threshold. EurekaCore maps supported task status, summary, plan notes, and registered tool results to its strict contract; proposed actions remain advisory and carry no authority.
+- **Verified limits:** EurekaCore contract tests use a fake `fetch`; no authorized live request to a deployed TINAN AI service has been verified. The TINAN AI API remains protected by the documented Basic Auth and owner checks; this change does not establish service-level authorization, idempotent submission, or real Cloudflare D1 availability.
 
 ## Cloudflare deployment readiness — workers.dev
 

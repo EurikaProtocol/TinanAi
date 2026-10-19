@@ -6,7 +6,7 @@ const { mkdtemp, rm, symlink, writeFile } = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
-const { createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
+const { approveAndExecute, createDemoPlan, createTaskRecord, planTask } = require('../.test-build/lib/agent/engine.js');
 const {
   createProjectPlan,
   createModelPlan,
@@ -16,7 +16,7 @@ const {
   ProviderError,
   validatePlan,
 } = require('../.test-build/lib/agent/openai-provider.js');
-const { allowRequest, cancelTask, createTask, getTask, recordApproval, transitionTask } = require('../.test-build/lib/agent/task-store.js');
+const { allowRequest, cancelTask, createTask, getTask, getTaskForOwner, recordApproval, transitionTask } = require('../.test-build/lib/agent/task-store.js');
 const { getRequestOwnerId } = require('../.test-build/lib/auth.js');
 const { executeTool, hasPermission } = require('../.test-build/lib/agent/tools.js');
 const {
@@ -46,6 +46,7 @@ const { isActiveProjectTaskStatus, isCancellableProjectTaskStatus } = require('.
 const database = new DatabaseSync(':memory:');
 const migrations = require('node:fs').readFileSync(path.join(process.cwd(), 'migrations/0001_initial.sql'), 'utf8');
 database.exec(migrations);
+database.exec(require('node:fs').readFileSync(path.join(process.cwd(), 'migrations/0002_agent_tasks.sql'), 'utf8'));
 const objects = new Map();
 const projectBindings = {
   TINAN_DB: {
@@ -87,13 +88,19 @@ const projectBindings = {
 storageModule.setProjectStorageTestResolver(() => projectBindings);
 
 function resetProjectStorage() {
-  database.exec('DELETE FROM projects; DELETE FROM project_tasks; DELETE FROM project_backups; DELETE FROM project_locks;');
+  database.exec('DELETE FROM projects; DELETE FROM project_tasks; DELETE FROM project_backups; DELETE FROM project_locks; DELETE FROM agent_tasks;');
   objects.clear();
   if (globalThis.tinanProjectRuntime) globalThis.tinanProjectRuntime.controllers.clear();
 }
 
 function freshProjectStore() {
   const modulePath = require.resolve('../.test-build/lib/builder/project-store.js');
+  delete require.cache[modulePath];
+  return require(modulePath);
+}
+
+function freshAgentTaskStore() {
+  const modulePath = require.resolve('../.test-build/lib/agent/task-store.js');
   delete require.cache[modulePath];
   return require(modulePath);
 }
@@ -328,22 +335,65 @@ test('file reading requires explicit authorization and rejects traversal and sym
   }
 });
 
-test('task state transitions reject invalid moves and support approval and cancellation', () => {
-  const task = createTaskRecord('state-test', 'test transitions', 'demo', [], ownerA);
-  createTask(task);
-  assert.equal(require('../.test-build/lib/agent/task-store.js').getTaskForOwner(task.id, ownerB), undefined);
-  assert.equal(getTask(task.id).status, 'planning');
-  transitionTask(task.id, 'awaiting_approval', 'Needs review.');
-  recordApproval(task.id, true, ownerA);
-  transitionTask(task.id, 'executing', 'Approved.');
-  transitionTask(task.id, 'completed', 'Finished.');
-  assert.throws(() => transitionTask(task.id, 'executing', 'Invalid reversal.'), /Invalid task transition/);
+test('task state transitions reject invalid moves and support approval and cancellation', async () => {
+  const task = createTaskRecord('00000000-0000-4000-8000-000000000001', 'test transitions', 'demo', [], ownerA);
+  await createTask(task);
+  assert.equal(await getTaskForOwner(task.id, ownerB), undefined);
+  assert.equal((await getTask(task.id)).status, 'planning');
+  await transitionTask(task.id, 'awaiting_approval', 'Needs review.');
+  assert.equal((await recordApproval(task.id, true, ownerA)).status, 'executing');
+  await assert.rejects(recordApproval(task.id, true, ownerA), /already been handled/);
+  await transitionTask(task.id, 'completed', 'Finished.');
+  await assert.rejects(transitionTask(task.id, 'executing', 'Invalid reversal.'), /Invalid task transition/);
 
-  const cancelled = createTaskRecord('cancel-test', 'cancel me', 'demo', [], ownerA);
-  createTask(cancelled);
-  assert.equal(cancelTask(cancelled.id, ownerA).status, 'cancelled');
-  assert.equal(getTask(cancelled.id).status, 'cancelled');
-  assert.equal(cancelTask(cancelled.id, ownerB), undefined);
+  const cancelled = createTaskRecord('00000000-0000-4000-8000-000000000002', 'cancel me', 'demo', [], ownerA);
+  await createTask(cancelled);
+  assert.equal((await cancelTask(cancelled.id, ownerA)).status, 'cancelled');
+  assert.equal((await getTask(cancelled.id)).status, 'cancelled');
+  assert.equal(await cancelTask(cancelled.id, ownerB), undefined);
+});
+
+test('agent approval atomically starts execution and completes the approved task', async () => {
+  const task = createTaskRecord('00000000-0000-4000-8000-000000000005', 'approved demo task', 'demo', [], ownerA);
+  await createTask(task);
+  await transitionTask(task.id, 'awaiting_approval', 'Needs review.');
+  const approved = await recordApproval(task.id, true, ownerA);
+  assert.equal(approved.status, 'executing');
+  await approveAndExecute(approved);
+  assert.equal((await getTaskForOwner(task.id, ownerA)).status, 'completed');
+  assert.equal((await getTaskForOwner(task.id, ownerA)).approvalHistory.length, 1);
+});
+
+test('agent task records survive store reloads and stale concurrent updates cannot overwrite task state', async () => {
+  const store = freshAgentTaskStore();
+  const task = createTaskRecord('00000000-0000-4000-8000-000000000003', 'persistent task', 'demo', [], ownerA);
+  await store.createTask(task);
+  const afterRestart = freshAgentTaskStore();
+  assert.equal((await afterRestart.getTaskForOwner(task.id, ownerA)).id, task.id);
+  assert.equal(await afterRestart.getTaskForOwner(task.id, ownerB), undefined);
+
+  const transition = await Promise.all([
+    afterRestart.transitionTask(task.id, 'executing', 'First concurrent transition.'),
+    afterRestart.transitionTask(task.id, 'executing', 'Second concurrent transition.'),
+  ]);
+  assert.equal(transition.every((result) => result.status === 'executing'), true);
+  const persisted = await freshAgentTaskStore().getTaskForOwner(task.id, ownerA);
+  assert.equal(persisted.progressEvents.filter((event) => /concurrent transition/.test(event.message)).length, 1);
+
+  const staleAt = new Date(Date.now() - 16 * 60 * 1000).toISOString();
+  persisted.status = 'planning';
+  persisted.updatedAt = staleAt;
+  database.prepare('UPDATE agent_tasks SET status = ?, record_json = ?, updated_at = ? WHERE id = ?')
+    .run(persisted.status, JSON.stringify(persisted), staleAt, persisted.id);
+  const recovered = await Promise.all([
+    freshAgentTaskStore().getTaskForOwner(task.id, ownerA),
+    freshAgentTaskStore().getTaskForOwner(task.id, ownerA),
+  ]);
+  assert.equal(recovered.every((result) => result.status === 'failed'), true);
+  const row = database.prepare('SELECT status, record_json FROM agent_tasks WHERE id = ?').get(task.id);
+  const record = JSON.parse(row.record_json);
+  assert.equal(row.status, 'failed');
+  assert.equal(record.errors.filter((message) => /Worker restart or timeout/.test(message)).length, 1);
 });
 
 test('approved tasks remain active until execution reaches a terminal status', () => {
@@ -385,8 +435,8 @@ test('process-local task rate limiter rejects bursts and expires old requests', 
 
 test('demo planning never selects tools and identifies sensitive goals', async () => {
   const safePlan = createDemoPlan('Organize a project');
-  const task = createTaskRecord('demo-test', 'Plan a mainnet deployment', 'demo', [], ownerA);
-  createTask(task);
+  const task = createTaskRecord('00000000-0000-4000-8000-000000000004', 'Plan a mainnet deployment', 'demo', [], ownerA);
+  await createTask(task);
   await planTask(task);
   assert.equal(safePlan.steps.every((step) => step.tool === null), true);
   assert.equal(task.status, 'awaiting_approval');

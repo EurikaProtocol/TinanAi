@@ -8,7 +8,7 @@ export async function GET(request: Request, context: RouteContext) {
   const ownerId = getRequestOwnerId(request);
   if (!ownerId) return NextResponse.json({ error: 'Authentication is required.' }, { status: 401 });
   const { id } = await context.params;
-  const task = getTaskForOwner(id, ownerId);
-  if (!task) return NextResponse.json({ error: 'Task not found in this server process.' }, { status: 404 });
-  return NextResponse.json({ task, persistence: 'process-memory' });
+  const task = await getTaskForOwner(id, ownerId);
+  if (!task) return NextResponse.json({ error: 'Task not found.' }, { status: 404 });
+  return NextResponse.json({ task, persistence: 'cloudflare-d1' });
 }
