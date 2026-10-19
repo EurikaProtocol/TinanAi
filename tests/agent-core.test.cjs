@@ -158,6 +158,8 @@ test('demo is the explicit default and provider configuration requires server cr
 
 test('provider returns a validated structured plan without exposing credentials', async () => {
   let sentAuthorization;
+  let requestedUrl;
+  let requestedModel;
   const plan = {
     summary: 'Review the project.',
     requiresApproval: false,
@@ -168,11 +170,15 @@ test('provider returns a validated structured plan without exposing credentials'
     [],
     undefined,
     validEnv,
-    async (_url, options) => {
+    async (url, options) => {
+      requestedUrl = url;
       sentAuthorization = options.headers.Authorization;
+      requestedModel = JSON.parse(options.body).model;
       return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(plan) } }] }), { status: 200 });
     },
   );
+  assert.equal(requestedUrl, 'https://ai.example.test/v1/chat/completions');
+  assert.equal(requestedModel, validEnv.TINAN_AI_MODEL);
   assert.equal(result.steps[0].tool.name, 'project.info');
   assert.equal(sentAuthorization, 'Bearer ' + validEnv.TINAN_AI_API_KEY);
   assert.equal(JSON.stringify(result).includes(validEnv.TINAN_AI_API_KEY), false);
@@ -231,9 +237,12 @@ test('project plan provider validates structured planning output before generati
 });
 
 test('provider failures and invalid provider plans fail closed', async () => {
+  const leakedProviderDetails = 'private-provider-detail-' + validEnv.TINAN_AI_API_KEY;
   await assert.rejects(
-    createModelPlan('objective', [], undefined, validEnv, async () => new Response('', { status: 429 })),
-    /rate limiting/,
+    createModelPlan('objective', [], undefined, validEnv, async () =>
+      new Response(leakedProviderDetails, { status: 429, headers: { 'content-type': 'text/plain' } })),
+    (error) => error instanceof ProviderError && /rate limiting/.test(error.message) &&
+      !error.message.includes(validEnv.TINAN_AI_API_KEY) && !error.message.includes('private-provider-detail'),
   );
   await assert.rejects(
     createModelPlan('objective', [], undefined, validEnv, async () => new Response('', { status: 402 })),
@@ -270,6 +279,20 @@ test('provider requests enforce the configured timeout', async () => {
     ),
     /timed out/,
   );
+});
+
+test('provider rejects an already-cancelled task before making a request', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  let requestMade = false;
+  await assert.rejects(
+    createModelPlan('objective', [], controller.signal, validEnv, async () => {
+      requestMade = true;
+      return new Response('{}', { status: 200 });
+    }),
+    /cancelled/,
+  );
+  assert.equal(requestMade, false);
 });
 
 test('tool permissions reject unregistered tools and require TEST for test proposals', async () => {

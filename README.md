@@ -157,6 +157,17 @@ unzip -l tinan-sample-services.zip
 
 This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
 
+## EurekaCore API contract (planned; not implemented)
+
+TINAN AI remains a separate service. The following versioned contract is a proposal for a future authenticated EurekaCore-to-TINAN integration; these routes do not currently exist and no end-to-end EurekaCore request has been verified.
+
+- **Transport and identity:** HTTPS server-to-server calls only. EurekaCore would send `Authorization: ****** using a token provisioned and rotated through the hosting secret manager (for example, `TINAN_EUREKACORE_API_TOKEN`). The token must never be sent to a browser. TINAN must validate the caller before reading the body; the current application does not issue or accept this service token.
+- **Authorization:** Resolve the authorized owner from the authenticated service identity and its server-side project grants. Check ownership/grants on every project and task read or mutation; never accept a client-supplied owner ID as authorization. Current project/task APIs use the single-owner Basic Auth flow, not this proposed service authorization.
+- **Submit:** `POST /api/v1/tasks`, with `Idempotency-Key` and JSON `{ "kind": "project-plan", "requirements": "..." }` or `{ "kind": "agent-plan", "objective": "..." }`; an optional `projectId` must be authorized. A future implementation should return `202 Accepted` with a task ID, initial status, and request ID. Reusing the same idempotency key for the same caller must not create duplicate work.
+- **Poll:** `GET /api/v1/tasks/{taskId}` returns only the authorized task's ID, kind, status, timestamps, sanitized error (if any), and approved result/authorized file references. Unknown and unauthorized task IDs should not reveal whether another caller's task exists.
+- **Errors and limits:** Validate JSON and size limits; use bounded timeouts; return sanitized `400`, `401/403`, `404`, `409`, `429`, and `5xx` responses with a request ID. Never return provider keys, raw upstream error bodies, or private project files outside authorized references.
+- **Current status:** The existing `/api/agent/tasks` and `/api/projects` endpoints are browser-facing application routes, not this versioned contract. No EurekaCore credentials are configured, and no authorized integration test has been run. Do not describe this contract as an active integration until both endpoints, service authentication, ownership checks, and a real authorized request are implemented and verified.
+
 ## Cloudflare deployment readiness — workers.dev
 
 This repository has no application deployment workflow; the visible GitHub Actions workflows are Copilot automations, not application deployment. Configure the environment on the actual Next.js hosting platform. Do not deploy or change DNS until the owner explicitly approves. All items below remain required before production use:

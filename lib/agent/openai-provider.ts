@@ -164,8 +164,10 @@ async function requestJson(
   const timer = setTimeout(() => timeout.abort(), config.timeoutMs);
   const onAbort = () => timeout.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
+  if (signal?.aborted) timeout.abort();
 
   try {
+    if (signal?.aborted) throw new ProviderError('Task was cancelled.');
     const response = await fetcher(`${config.baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
