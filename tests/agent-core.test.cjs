@@ -342,6 +342,7 @@ test('task state transitions reject invalid moves and support approval and cance
   assert.equal((await getTask(task.id)).status, 'planning');
   await transitionTask(task.id, 'awaiting_approval', 'Needs review.');
   await recordApproval(task.id, true, ownerA);
+  await assert.rejects(recordApproval(task.id, true, ownerA), /already been handled/);
   await transitionTask(task.id, 'executing', 'Approved.');
   await transitionTask(task.id, 'completed', 'Finished.');
   await assert.rejects(transitionTask(task.id, 'executing', 'Invalid reversal.'), /Invalid task transition/);

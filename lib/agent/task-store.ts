@@ -151,8 +151,8 @@ export async function cancelTask(id: string, ownerId: string): Promise<AgentTask
 
 export async function recordApproval(id: string, approved: boolean, ownerId: string): Promise<AgentTask> {
   const task = await getTaskForOwner(id, ownerId);
-  if (!task || task.status !== 'awaiting_approval') {
-    throw new Error('This task is not waiting for approval.');
+  if (!task || task.status !== 'awaiting_approval' || task.approvalHistory.length > 0) {
+    throw new Error('This task is not waiting for approval or has already been handled.');
   }
   const updatedAt = new Date().toISOString();
   const next: AgentTask = {
