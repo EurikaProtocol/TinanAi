@@ -186,7 +186,7 @@ This repository has no application deployment workflow; the visible GitHub Actio
 
 The latest `npm audit` run for the checked-in lockfile reports 10 findings (8 high, 2 moderate, 0 critical). Findings include the current Tailwind 3 dependency tree (`chokidar`/`braces`, `fast-glob`/`micromatch`/`braces`, and `postcss-nested`/`postcss-selector-parser`), the Next 15 lint-config dependency tree, and `@opennextjs/cloudflare@1.19.11` (the advisory affects versions through 1.20.1).
 
-Npm reports a non-major `@opennextjs/cloudflare@1.20.12` remediation, but it has not been applied or compatibility-tested in this change. Other suggested remediations involve Tailwind CSS 4 or downgrading `eslint-config-next` to 14.2.35, which is not compatible with the installed Next 15 line. No force overrides or dependency updates were made; reassess the current advisories and test the adapter update and any major migrations separately before deployment.
+Although npm suggested `@opennextjs/cloudflare@1.20.12`, a lockfile trial with that adapter and its required Next.js 15.5.28 patch increased the audit total to 13 (11 high, 2 moderate), including new `@node-minify/core`/`glob` findings through the OpenNext AWS adapter. The trial was reverted and no adapter migration is included. Other suggested remediations involve Tailwind CSS 4 or downgrading `eslint-config-next` to 14.2.35, which is not compatible with the installed Next 15 line. No force overrides were retained; reassess the dependency graph and validate a safe adapter update before deployment.
 
 ## Local development and validation
 
