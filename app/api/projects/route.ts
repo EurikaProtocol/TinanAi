@@ -3,6 +3,7 @@ import { getRequestOwnerId } from '@/lib/auth';
 import { getOpenAICompatibleConfig, getProviderMode, ProviderError } from '@/lib/agent/openai-provider';
 import { allowRequest } from '@/lib/agent/task-store';
 import { createProjectTask, getProjectForOwner, listProjects } from '@/lib/builder/project-store';
+import { getProjectTemplate } from '@/lib/builder/templates';
 import { runProjectPlanning } from '@/lib/builder/runner';
 
 export const runtime = 'nodejs';
@@ -37,6 +38,17 @@ export async function POST(request: Request) {
   if ('projectId' in body && (typeof body.projectId !== 'string' || !/^[0-9a-f-]{36}$/i.test(body.projectId))) {
     return NextResponse.json({ error: 'Project ID is invalid.' }, { status: 400 });
   }
+  const templateId = 'templateId' in body ? body.templateId : undefined;
+  if (templateId !== undefined && (typeof templateId !== 'string' || !getProjectTemplate(templateId))) {
+    return NextResponse.json({ error: 'Template selection is invalid.' }, { status: 400 });
+  }
+  const template = typeof templateId === 'string' ? getProjectTemplate(templateId) : undefined;
+  const planningRequirements = template
+    ? `${requirements}\n\nSelected example template: ${template.name} (template id: ${templateId}). Use this as a structural and visual starting point, adapting it to the requirements above.`
+    : requirements;
+  if (planningRequirements.length > 8000) {
+    return NextResponse.json({ error: 'Requirements and template context must be 8,000 characters or fewer.' }, { status: 400 });
+  }
   try {
     if (getProviderMode() !== 'openai-compatible') {
       return NextResponse.json({ error: 'Project generation needs a real provider. Configure TINAN_AI_PROVIDER=openai-compatible, TINAN_AI_API_KEY, and TINAN_AI_MODEL.' }, { status: 503 });
@@ -53,7 +65,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Project not found.' }, { status: 404 });
   }
   const task = await createProjectTask(
-    requirements,
+    planningRequirements,
     ownerId,
     'generation',
     'projectId' in body ? body.projectId as string : null,

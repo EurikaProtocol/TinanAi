@@ -180,7 +180,7 @@ export default function MarketingHome() {
       <section className="marketing-section gallery-section" id="templates">
         <div className="section-heading">
           <div><div className="marketing-eyebrow"><i /> WHAT WILL YOU MAKE?</div><h2>One idea, many<br />directions.</h2></div>
-          <p>Explore a few project types to get your imagination moving. These are examples, not generated previews or downloadable templates.</p>
+          <p>Choose a starting brief to carry into Project Builder. The configured provider creates the plan and source after your review.</p>
         </div>
         <div className="project-gallery">
           {examples.map((example, index) => (

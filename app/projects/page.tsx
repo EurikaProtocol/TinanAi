@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { isActiveProjectTaskStatus, isCancellableProjectTaskStatus, type ProjectTaskStatus } from '@/lib/builder/task-status';
+import { getProjectTemplate } from '@/lib/builder/templates';
 
 type Project = {
   id: string;
@@ -45,11 +46,13 @@ export default function ProjectsPage() {
   const [selectedFile, setSelectedFile] = useState('');
   const [fileContent, setFileContent] = useState('');
   const [requirements, setRequirements] = useState('');
+  const [selectedTemplateId, setSelectedTemplateId] = useState('');
   const [task, setTask] = useState<BuilderTask | null>(null);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const selectedProject = projects.find((project) => project.id === selectedId) ?? null;
+  const selectedTemplate = selectedTemplateId ? getProjectTemplate(selectedTemplateId) : undefined;
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -65,6 +68,14 @@ export default function ProjectsPage() {
   useEffect(() => {
     void refreshProjects();
   }, [refreshProjects]);
+
+  useEffect(() => {
+    const templateId = new URLSearchParams(window.location.search).get('template');
+    const template = templateId ? getProjectTemplate(templateId) : undefined;
+    if (!templateId || !template) return;
+    setSelectedTemplateId(templateId);
+    setRequirements(template.prompt);
+  }, []);
 
   const refreshTask = useCallback(async (taskId: string) => {
     try {
@@ -101,6 +112,7 @@ export default function ProjectsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           requirements,
+          ...(selectedTemplateId ? { templateId: selectedTemplateId } : {}),
           ...(selectedId ? { projectId: selectedId } : {}),
         }),
       });
@@ -218,6 +230,7 @@ export default function ProjectsPage() {
           <form className="requirements-card" onSubmit={submitGeneration}>
             <label htmlFor="project-requirements">{selectedId ? 'CONTINUE BUILDING THIS PROJECT' : 'DESCRIBE YOUR PROJECT'}</label>
             {selectedProject && <p className="selected-project-note">Adding generated files to <strong>{selectedProject.name}</strong>. Existing source is snapshotted for rollback.</p>}
+            {selectedTemplate && <p className="selected-template-note">Starting from the <strong>{selectedTemplate.name}</strong> example. Edit this brief before requesting a plan.</p>}
             <textarea
               id="project-requirements"
               maxLength={8000}

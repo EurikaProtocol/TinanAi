@@ -1585,7 +1585,8 @@ textarea:focus-visible {
   .builder-status {
     display: flex;
     align-items: center;
-    gap: 7px;
+      min-width: 0;
+      gap: 7px;
     color: #a1b2a7;
     font-size: 9px;
   }
@@ -1826,6 +1827,20 @@ textarea:focus-visible {
     margin: 0 0 8px;
     color: #87968c;
     font-size: 9px;
+  }
+
+  .selected-template-note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 0 0 8px;
+    color: #8796a8;
+    font-size: 9px;
+  }
+
+  .selected-template-note strong {
+    color: #7dd8e5;
+    font-weight: 600;
   }
 
   .selected-project-note strong {
@@ -2911,12 +2926,25 @@ textarea:focus-visible {
 }
 
 .gallery-card {
+    display: block;
     min-width: 0;
     overflow: hidden;
     grid-column: span 2;
     border: 1px solid rgba(128, 162, 203, 0.16);
     border-radius: 9px;
     background: #0d1424;
+    color: inherit;
+    text-decoration: none;
+    transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.gallery-card:hover {
+    transform: translateY(-2px);
+    border-color: rgba(87, 202, 223, 0.52);
+}
+
+.gallery-card:active {
+    transform: translateY(0);
 }
 
 .gallery-card:nth-child(4) { grid-column: 2 / span 2; }
@@ -3086,7 +3114,7 @@ textarea:focus-visible {
     }
     .mobile-nav-actions .marketing-signin { display: flex; align-items: center; }
     .marketing-hero { grid-template-columns: 1fr; gap: 5px; padding: 64px 0 65px; }
-    .marketing-hero h1 { font-size: clamp(50px, 12vw, 76px); }
+    .marketing-hero h1 { font-size: clamp(38px, 10vw, 68px); }
     .hero-copy > p { max-width: 580px; font-size: 12px; }
     .hero-visual { min-height: 390px; }
     .hero-window { width: min(470px, 86%); }
@@ -3165,6 +3193,7 @@ textarea:focus-visible {
 
     .builder-topbar {
       height: 57px;
+      gap: 8px;
     }
 
     .builder-brand {
@@ -3179,6 +3208,7 @@ textarea:focus-visible {
     .builder-breadcrumb {
       gap: 5px;
       font-size: 8px;
+      display: none;
     }
 
     .builder-status {
