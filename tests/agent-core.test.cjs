@@ -453,12 +453,15 @@ test('project metadata, files, tasks, and rollback snapshots survive fresh stora
     assert.equal(await freshProjectStore().readProjectFile(project.id, 'src/index.ts', ownerA), generatedProject.files[0].content);
     assert.equal(database.prepare('SELECT COUNT(*) AS count FROM project_backups WHERE project_id = ?').get(project.id).count, 0);
 
-    const interrupted = await createProjectTask('Interrupted generation', ownerA);
+    const interrupted = await createProjectTask('Interrupted planning', ownerA, 'generation', null, null, 'planning');
     const expiredTime = new Date(Date.now() - 16 * 60 * 1000).toISOString();
     interrupted.updatedAt = expiredTime;
     database.prepare('UPDATE project_tasks SET record_json = ?, updated_at = ? WHERE id = ?')
       .run(JSON.stringify(interrupted), expiredTime, interrupted.id);
     assert.equal((await freshProjectStore().getProjectTaskForOwner(interrupted.id, ownerA)).status, 'failed');
+    assert.equal(database.prepare('SELECT status FROM project_tasks WHERE id = ?').get(interrupted.id).status, 'failed');
+    assert.match(JSON.parse(database.prepare('SELECT record_json FROM project_tasks WHERE id = ?').get(interrupted.id).record_json).errors[0],
+      /Worker restart or timeout/);
   } finally {
     resetProjectStorage();
   }
