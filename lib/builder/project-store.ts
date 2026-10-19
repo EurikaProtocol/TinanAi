@@ -161,13 +161,23 @@ export async function getProjectTask(id: string, ownerId: string): Promise<Proje
     if (task.id !== id || task.ownerId !== ownerId) return undefined;
     if (['planning', 'generating', 'committing'].includes(task.status) &&
         Date.parse(task.updatedAt) < Date.now() - 15 * 60 * 1000) {
+      const interruptedStatus = task.status;
+      const staleUpdatedAt = task.updatedAt;
       task.status = 'failed';
       task.progress.push('Task was marked failed after its Worker execution did not resume.');
       task.errors.push('Task execution was interrupted by a Worker restart or timeout.');
       task.updatedAt = new Date().toISOString();
-      await TINAN_DB.prepare(
-        "UPDATE project_tasks SET record_json = ?, status = 'failed', updated_at = ? WHERE id = ? AND owner_id = ? AND status IN ('generating', 'committing')",
-      ).bind(JSON.stringify(task), task.updatedAt, id, ownerId).run();
+      const result = await TINAN_DB.prepare(
+        "UPDATE project_tasks SET record_json = ?, status = 'failed', updated_at = ? WHERE id = ? AND owner_id = ? AND status = ? AND updated_at = ?",
+      ).bind(JSON.stringify(task), task.updatedAt, id, ownerId, interruptedStatus, staleUpdatedAt).run();
+      if (!result.meta?.changes) {
+        const current = await TINAN_DB.prepare(
+          'SELECT record_json FROM project_tasks WHERE id = ? AND owner_id = ?',
+        ).bind(id, ownerId).first<TaskRow>();
+        if (!current) return undefined;
+        const currentTask = JSON.parse(current.record_json) as ProjectTask;
+        return currentTask.id === id && currentTask.ownerId === ownerId ? currentTask : undefined;
+      }
     }
     return task;
   } catch {

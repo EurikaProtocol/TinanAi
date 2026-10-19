@@ -157,6 +157,17 @@ unzip -l tinan-sample-services.zip
 
 This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
 
+## EurekaCore API contract (planned; not implemented)
+
+TINAN AI remains a separate service. The following versioned contract is a proposal for a future authenticated EurekaCore-to-TINAN integration; these routes do not currently exist and no end-to-end EurekaCore request has been verified.
+
+- **Transport and identity:** HTTPS server-to-server calls only. EurekaCore would authenticate with a bearer token provisioned and rotated through the hosting secret manager (for example, `TINAN_EUREKACORE_API_TOKEN`). The token must never be sent to a browser. TINAN must validate the caller before reading the body; the current application does not issue or accept this service token.
+- **Authorization:** Resolve the authorized owner from the authenticated service identity and its server-side project grants. Check ownership/grants on every project and task read or mutation; never accept a client-supplied owner ID as authorization. Current project/task APIs use the single-owner Basic Auth flow, not this proposed service authorization.
+- **Submit:** `POST /api/v1/tasks`, with `Idempotency-Key` and JSON `{ "kind": "project-plan", "requirements": "..." }` or `{ "kind": "agent-plan", "objective": "..." }`; an optional `projectId` must be authorized. A future implementation should return `202 Accepted` with a task ID, initial status, and request ID. Reusing the same idempotency key for the same caller must not create duplicate work.
+- **Poll:** `GET /api/v1/tasks/{taskId}` returns only the authorized task's ID, kind, status, timestamps, sanitized error (if any), and approved result/authorized file references. Unknown and unauthorized task IDs should not reveal whether another caller's task exists.
+- **Errors and limits:** Validate JSON and size limits; use bounded timeouts; return sanitized `400`, `401/403`, `404`, `409`, `429`, and `5xx` responses with a request ID. Never return provider keys, raw upstream error bodies, or private project files outside authorized references.
+- **Current status:** The existing `/api/agent/tasks` and `/api/projects` endpoints are browser-facing application routes, not this versioned contract. No EurekaCore credentials are configured, and no authorized integration test has been run. Do not describe this contract as an active integration until both endpoints, service authentication, ownership checks, and a real authorized request are implemented and verified.
+
 ## Cloudflare deployment readiness — workers.dev
 
 This repository has no application deployment workflow; the visible GitHub Actions workflows are Copilot automations, not application deployment. Configure the environment on the actual Next.js hosting platform. Do not deploy or change DNS until the owner explicitly approves. All items below remain required before production use:
@@ -173,13 +184,9 @@ This repository has no application deployment workflow; the visible GitHub Actio
 
 ## Dependency audit
 
-The current `npm audit` reports 9 findings (7 high, 2 moderate, 0 critical). The affected dependency paths are:
+The latest `npm audit` run for the checked-in lockfile reports 10 findings (8 high, 2 moderate, 0 critical). Findings include the current Tailwind 3 dependency tree (`chokidar`/`braces`, `fast-glob`/`micromatch`/`braces`, and `postcss-nested`/`postcss-selector-parser`), the Next 15 lint-config dependency tree, and `@opennextjs/cloudflare@1.19.11` (the advisory affects versions through 1.20.1).
 
-- High: direct `tailwindcss@3.3.3` → `chokidar@3.6.0` → `braces@3.0.3`; direct `tailwindcss@3.3.3` → `fast-glob@3.3.3` → `micromatch@4.0.8` → `braces@3.0.3`; and `tailwindcss@3.3.3` → `postcss-nested@6.2.0` → `postcss-selector-parser@6.1.4`.
-- High: direct `eslint-config-next@15.5.27` → `@next/eslint-plugin-next@15.5.27` → `fast-glob@3.3.1` → `micromatch@4.0.8` → `braces@3.0.3`.
-- Moderate: `postcss-nested@6.2.0` → `postcss-selector-parser@6.1.4` is affected by the parser advisory for versions below 7.1.6.
-
-`npm ci` and `npm audit` still report 9 findings (7 high, 2 moderate). No compatible safe fix is currently available without a major dependency migration: npm's Tailwind remediation is Tailwind CSS 4.3.3, while the installed Tailwind 3 line tops out at 3.4.19 and remains affected; npm's `eslint-config-next` suggestion is 14.2.35, a downgrade incompatible with the installed Next.js 15 line. The registry currently exposes `braces` 3.0.3, which remains in the affected range, and `postcss-nested` 6.x requires `postcss-selector-parser` 6.x while the parser advisory requires 7.1.6 or later. These findings remain unresolved and must be addressed in a separately tested Tailwind v4 / compatible Next lint-tooling migration; do not force-install incompatible versions.
+Although npm suggested `@opennextjs/cloudflare@1.20.12`, a lockfile trial with that adapter and its required Next.js 15.5.28 patch increased the audit total to 13 (11 high, 2 moderate), including new `@node-minify/core`/`glob` findings through the OpenNext AWS adapter. The trial was reverted and no adapter migration is included. Other suggested remediations involve Tailwind CSS 4 or downgrading `eslint-config-next` to 14.2.35, which is not compatible with the installed Next 15 line. No force overrides were retained; reassess the dependency graph and validate a safe adapter update before deployment.
 
 ## Local development and validation
 
@@ -191,4 +198,4 @@ npm run lint
 npm run build
 ```
 
-The earlier audit remediation reduced findings from 19 (3 moderate, 16 high) to 9. Re-run `npm audit` before each deployment; advisories and compatible fixes can change.
+Re-run `npm audit` before each deployment; advisories and compatible fixes can change.
