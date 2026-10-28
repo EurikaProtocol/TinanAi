@@ -7,8 +7,8 @@
     "build": "next build",
     "build:cloudflare": "opennextjs-cloudflare build",
     "preview:cloudflare": "opennextjs-cloudflare build && wrangler dev",
-    "deploy:cloudflare": "npm run build:cloudflare && opennextjs-cloudflare deploy",
-    "deploy:cloudflare:preview": "npm run build:cloudflare && opennextjs-cloudflare deploy --env preview",
+    "deploy:cloudflare": "opennextjs-cloudflare deploy",
+    "deploy:cloudflare:preview": "opennextjs-cloudflare deploy --env preview",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -27,13 +27,14 @@
     "typescript": "5.2.2"
   },
   "overrides": {
-    "postcss": "^8.5.30"
+    "postcss": "^8.5.30",
+    "@opennextjs/aws": "4.1.8"
   },
   "devDependencies": {
     "@opennextjs/cloudflare": "1.20.13",
     "eslint": "9.39.5",
     "eslint-config-next": "16.4.3",
-    "wrangler": "4.150.0"
+    "wrangler": "4.154.0"
   },
   "engines": {
     "node": ">=22"
