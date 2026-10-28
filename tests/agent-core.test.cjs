@@ -597,6 +597,33 @@ test('project generation requires plan approval and persists approval across sto
   }
 });
 
+test('updating an existing project requires explicit overwrite confirmation', async () => {
+  resetProjectStorage();
+  const project = await createProject(generatedProject, ownerA);
+  const task = await createProjectTask(
+    'Update this project',
+    ownerA,
+    'generation',
+    project.id,
+    null,
+    'planning',
+  );
+  assert.equal(await setProjectTaskPlan(task, {
+    summary: 'Update the existing project.',
+    technology: ['HTML', 'CSS'],
+    features: ['Updated content'],
+    steps: ['Update the requested files', 'Keep unrelated files'],
+  }), true);
+
+  const withoutConfirmation = await approveProjectTask(task.id, ownerA);
+  assert.equal(withoutConfirmation.status, 'awaiting_approval');
+  assert.equal((await getProjectTaskForOwner(task.id, ownerA)).status, 'awaiting_approval');
+
+  const confirmed = await approveProjectTask(task.id, ownerA, true);
+  assert.equal(confirmed.status, 'generating');
+  assert.equal(confirmed.projectId, project.id);
+});
+
 test('rollback cleanup failures retain metadata and are retried on the next project listing', async () => {
   resetProjectStorage();
   const project = await createProject(generatedProject, ownerA);

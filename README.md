@@ -103,7 +103,7 @@ Set the provider to `openai-compatible` only when intentionally enabling paid/cr
 
 ## Project Builder
 
-- Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
+- Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Updating an existing project also requires a separate overwrite confirmation; matching generated paths may be replaced, other files are preserved, and a rollback snapshot is created. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
 - Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Project metadata/tasks are owner-scoped in D1; source files and rollback snapshots use owner-prefixed R2 keys.
 - Source export is a `.zip` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
 - Project execution and generated code checks are disabled in the interface and API; requests return unavailable and never spawn a process or execute model-generated commands.
