@@ -31,7 +31,7 @@ No real provider credentials were available during implementation, so provider i
 
 ## Cloudflare Workers
 
-This project uses Next.js `16.4.3`, React `19.3.0`, `@opennextjs/cloudflare@1.20.13`, and Wrangler `4.154.0` (Node.js 22 or newer). The pinned Next/OpenNext versions satisfy the adapter's supported peer range. The adapter's `@opennextjs/aws` dependency is pinned to `4.1.8` to avoid vulnerable transitive releases; the current lockfile audit is clean. Authentication uses Next.js `proxy.ts`; OpenNext currently warns that Node.js proxy middleware support on Cloudflare is experimental, so this must be validated in the remote preview before production approval. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` runs that bundle locally, `npm run deploy:cloudflare:preview` deploys the isolated preview Worker, and `npm run deploy:cloudflare` targets the production Worker. The production command must only be run after preview verification and explicit release approval. Sandbox checks remain disabled by default.
+This project uses Next.js `16.4.3`, React `19.3.0`, `@opennextjs/cloudflare@1.20.13`, and Wrangler `4.154.0` (Node.js 22 or newer). The pinned Next/OpenNext versions satisfy the adapter's supported peer range. The adapter's `@opennextjs/aws` dependency is pinned to `4.1.8` to avoid vulnerable transitive releases; the current lockfile audit is clean. Authentication uses Next.js `proxy.ts`; OpenNext currently warns that Node.js proxy middleware support on Cloudflare is experimental, so this must be validated in the remote preview before production approval. `.node-version` selects Node 22. `npm run build` now runs the OpenNext Cloudflare build (`opennextjs-cloudflare build`, which invokes `next build` internally via `buildCommand` in `open-next.config.ts`) and verifies the `.open-next` artifacts; use `npm run build:next` for a plain Next.js build. Cloudflare's default `npm run build` + `npx wrangler deploy` therefore finds the compiled OpenNext config. `npm run build:cloudflare` is an alias; `npm run preview:cloudflare` runs that bundle locally, `npm run deploy:cloudflare:preview` deploys the isolated preview Worker, and `npm run deploy:cloudflare` targets the production Worker. The production command must only be run after preview verification and explicit release approval. Sandbox checks remain disabled by default.
 
 Project metadata, project and agent tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project/task lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the store modules between operations to simulate separate requests and a Worker restart.
 
@@ -92,7 +92,7 @@ When a production release is explicitly approved, configure **Workers Builds →
 
 - **Production branch:** `main` (merge this feature branch into `main` before enabling production builds).
 - **Root directory:** `/` (repository root).
-- **Build command:** `npm run build:cloudflare`.
+- **Build command:** `npm run build` (or `npm run build:cloudflare`).
 - **Deploy command:** `npm run deploy:cloudflare`.
 - **Build environment variable:** `NODE_VERSION=22` (also recorded in `.node-version`).
 - **Install command, if shown:** `npm ci`.
