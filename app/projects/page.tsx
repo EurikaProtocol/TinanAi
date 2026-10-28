@@ -50,6 +50,7 @@ export default function ProjectsPage() {
   const [task, setTask] = useState<BuilderTask | null>(null);
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [overwriteConfirmation, setOverwriteConfirmation] = useState('');
 
   const selectedProject = projects.find((project) => project.id === selectedId) ?? null;
   const selectedTemplate = selectedTemplateId ? getProjectTemplate(selectedTemplateId) : undefined;
@@ -106,6 +107,7 @@ export default function ProjectsPage() {
     if (!requirements.trim() || isSubmitting) return;
     setIsSubmitting(true);
     setError('');
+    setOverwriteConfirmation('');
     try {
       const response = await fetch('/api/projects', {
         method: 'POST',
@@ -134,7 +136,10 @@ export default function ProjectsPage() {
       const response = await fetch(`/api/projects/tasks/${encodeURIComponent(task.id)}/approval`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ approved }),
+        body: JSON.stringify({
+          approved,
+          confirmOverwrite: task.projectId !== null && overwriteConfirmation === task.id,
+        }),
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || 'Project plan approval could not be recorded.');
@@ -260,7 +265,19 @@ export default function ProjectsPage() {
                 <div><b>Features</b>{task.plan.features.map((feature) => <span key={feature}>{feature}</span>)}</div>
                 <ol>{task.plan.steps.map((step, index) => <li key={`${index}-${step}`}>{step}</li>)}</ol>
                 {task.status === 'awaiting_approval' && <div className="approval-actions">
-                  <button type="button" onClick={() => void respondToPlan(true)}>Approve and generate files</button>
+                  {task.projectId && <label className="overwrite-confirmation">
+                    <input
+                      checked={overwriteConfirmation === task.id}
+                      onChange={(event) => setOverwriteConfirmation(event.target.checked ? task.id : '')}
+                      type="checkbox"
+                    />
+                    I understand matching file paths may be replaced; other files are preserved, and a rollback snapshot is created.
+                  </label>}
+                  <button
+                    disabled={Boolean(task.projectId && overwriteConfirmation !== task.id)}
+                    type="button"
+                    onClick={() => void respondToPlan(true)}
+                  >Approve and generate files</button>
                   <button type="button" onClick={() => void respondToPlan(false)}>Decline plan</button>
                 </div>}
               </div>}

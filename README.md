@@ -31,46 +31,64 @@ No real provider credentials were available during implementation, so provider i
 
 ## Cloudflare Workers
 
-This project uses `@opennextjs/cloudflare@1.19.11` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.18 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). The adapter version was chosen instead of `1.20.11` because the latter added npm audit findings in this repository's lockfile. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
+This project uses Next.js `16.4.3`, React `19.3.0`, `@opennextjs/cloudflare@1.20.13`, and Wrangler `4.154.0` (Node.js 22 or newer). The pinned Next/OpenNext versions satisfy the adapter's supported peer range. The adapter's `@opennextjs/aws` dependency is pinned to `4.1.8` to avoid vulnerable transitive releases; the current lockfile audit is clean. Authentication uses Next.js `proxy.ts`; OpenNext currently warns that Node.js proxy middleware support on Cloudflare is experimental, so this must be validated in the remote preview before production approval. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` runs that bundle locally, `npm run deploy:cloudflare:preview` deploys the isolated preview Worker, and `npm run deploy:cloudflare` targets the production Worker. The production command must only be run after preview verification and explicit release approval. Sandbox checks remain disabled by default.
 
 Project metadata, project and agent tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project/task lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the store modules between operations to simulate separate requests and a Worker restart.
 
 ### Provision durable storage
 
-Create the Cloudflare resources from the repository root:
+Create separate durable resources for preview and production from the repository root:
 
 ```bash
 npx wrangler d1 create tinan-ai-metadata
 npx wrangler r2 bucket create tinan-ai-project-files
+npx wrangler d1 create tinan-ai-metadata-preview
+npx wrangler r2 bucket create tinan-ai-project-files-preview
 ```
 
-The deployment environment used for this work has no authenticated Cloudflare account, so no real D1 database could be verified or configured. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`), run the commands above in the intended account, and set the `database_id` property in the `TINAN_DB` binding in `wrangler.jsonc` to the exact ID returned by `npx wrangler d1 create`. Do not deploy until the binding contains the real ID. Keep the names and binding identifiers aligned with the config:
+The deployment environment used for this work has no authenticated Cloudflare account, so no remote preview or production service could be created or verified. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`) and create the resources above in the intended account. Add each returned D1 ID as `database_id` in its matching `TINAN_DB` binding in `wrangler.jsonc`; never point preview at the production database. Do not deploy until the IDs and resources are present. Keep the names and binding identifiers aligned with the config:
 
 | Resource | Wrangler binding | Resource name |
 | --- | --- | --- |
 | D1 database | `TINAN_DB` | `tinan-ai-metadata` |
 | R2 bucket | `TINAN_PROJECT_FILES` | `tinan-ai-project-files` |
+| Preview D1 database | `TINAN_DB` in `env.preview` | `tinan-ai-metadata-preview` |
+| Preview R2 bucket | `TINAN_PROJECT_FILES` in `env.preview` | `tinan-ai-project-files-preview` |
 
 Apply the D1 migration to the remote database before deploying:
 
 ```bash
 npx wrangler d1 migrations apply tinan-ai-metadata --remote
+npx wrangler d1 migrations apply tinan-ai-metadata-preview --remote --env preview
 ```
 
-For local Worker preview, initialize Wrangler's local D1 database first:
+For local Worker development, initialize Wrangler's local D1 database first:
 
 ```bash
 npx wrangler d1 migrations apply tinan-ai-metadata --local
 npm run preview:cloudflare
 ```
 
-Wrangler persists local D1/R2 preview state under the ignored `.wrangler/` directory. Cloudflare production and preview Workers need both bindings configured; the names above are already declared in `wrangler.jsonc`. D1 stores project and agent-task JSON metadata, ownership, check/repair state, and locks. R2 stores source files and durable rollback snapshots. Do not manually expose either binding to browser code.
+The top-level `tinanai2` Worker is the production target. The Wrangler `preview` environment deploys `tinanai2-preview` to its `workers.dev` URL and has its own D1 and R2 resources. D1 stores project and agent-task JSON metadata, ownership, check/repair state, and locks; R2 stores generated files and rollback snapshots. These bindings are server-side only and must never be exposed to browser code. Wrangler persists local state under the ignored `.wrangler/` directory.
+
+### Preview-first release
+
+The authenticated Cloudflare account is not available in this repository workspace. The following commands are the required operator steps after provisioning the preview resources and inserting its D1 ID into `env.preview`:
+
+```bash
+npx wrangler login
+npx wrangler d1 migrations apply tinan-ai-metadata-preview --remote --env preview
+npm run build:cloudflare
+npm run deploy:cloudflare:preview
+```
+
+The preview service URL is `https://tinanai2-preview.<account-subdomain>.workers.dev` after a successful deployment. Configure and verify the preview Worker's runtime settings and bindings before testing it. Do not promote or deploy production until the preview has been verified and the owner explicitly approves release. No DNS, custom domain, production deployment, or production secret changes are part of these steps.
 
 Project persistence tests verify create, update, retrieve, export, and rollback through newly loaded storage modules against the same D1/R2 backing data. Agent-task tests verify owner-scoped reads, durable transitions, interrupted-task recovery, and compare-and-set behavior across store reloads. These exercise the durable binding contract across request/module restarts; production Cloudflare account provisioning and remote persistence have not been tested from this environment.
 
 ### Workers Builds screen
 
-In **Workers & Pages → Workers → Build → Build settings**, use:
+When a production release is explicitly approved, configure **Workers Builds → Build settings** for the production service as follows. Keep production publishing disabled until then:
 
 - **Production branch:** `main` (merge this feature branch into `main` before enabling production builds).
 - **Root directory:** `/` (repository root).
@@ -79,31 +97,31 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 - **Build environment variable:** `NODE_VERSION=22` (also recorded in `.node-version`).
 - **Install command, if shown:** `npm ci`.
 
-This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
+Create a separate preview Worker/branch deployment using `env.preview`; it must use `npm run deploy:cloudflare:preview`, not the production command. This repository has no application deployment workflow. Cloudflare runtime bindings and secrets are configured on each Worker/environment; GitHub Actions secrets do not automatically become runtime bindings. Do not enable automatic production promotion.
 
 The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
 
 ### Worker runtime settings
 
-Set the following under the Worker's **Settings → Variables and Secrets** for each environment (production and preview/development separately).
+Set the following under the matching Worker's **Settings → Variables and Secrets**. Configure preview and production separately; do not copy production credentials or point preview to production storage.
 
 | Name | Type | Value |
 | --- | --- | --- |
 | `TINAN_AUTH_USERNAME` | Variable | Your single-owner sign-in name. |
 | `TINAN_AUTH_PASSWORD` | Secret | A newly generated random value of at least 32 characters. |
 | `TINAN_AI_PROVIDER` | Variable | `openai-compatible` to enable real provider requests; `demo` keeps real requests disabled. |
-| `TINAN_AI_API_KEY` | Secret | The existing OpenRouter secret, entered directly in Cloudflare's secret UI. Do not paste it into GitHub source, build logs, or chat. |
+| `TINAN_AI_API_KEY` | Secret | Required only when real provider calls are approved; enter it directly in Cloudflare's secret UI. Do not paste it into source, build logs, or chat. |
 | `TINAN_AI_MODEL` | Variable | Exact model ID selected from OpenRouter. |
 | `TINAN_AI_BASE_URL` | Variable | `https://openrouter.ai/api/v1`. |
 | `TINAN_AI_TIMEOUT_MS` | Variable | Optional integer from `1000` to `60000`; e.g. `20000`. |
 | `TINAN_ENABLE_FILE_READING` | Variable | `false` unless explicitly needed. |
 | `TINAN_SANDBOX_VERIFIED` | Variable | `false`; execution remains disabled in code. |
 
-Set the provider to `openai-compatible` only when intentionally enabling paid/credit-consuming provider calls. Cloudflare secrets/variables are runtime settings and must be present on the deployed Worker; build-time secrets are not a substitute. For local Wrangler preview, copy `.dev.vars.example` to `.dev.vars` and use test-only values. Never put a real provider key in the example file.
+Set the provider to `openai-compatible` only when intentionally enabling paid/credit-consuming provider calls. Cloudflare secrets/variables are runtime settings and must be present on the deployed Worker; configure them separately for `tinanai2-preview` and `tinanai2`, because preview must not inherit production credentials. Build-time secrets are not a substitute. For local Wrangler preview, copy `.dev.vars.example` to `.dev.vars` and use test-only values. Never put a real provider key in the example file.
 
 ## Project Builder
 
-- Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
+- Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Updating an existing project also requires a separate overwrite confirmation; matching generated paths may be replaced, other files are preserved, and a rollback snapshot is created. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
 - Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Project metadata/tasks are owner-scoped in D1; source files and rollback snapshots use owner-prefixed R2 keys.
 - Source export is a `.zip` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
 - Project execution and generated code checks are disabled in the interface and API; requests return unavailable and never spawn a process or execute model-generated commands.
@@ -168,23 +186,22 @@ EurekaCore's `docs/TINANAI_INTEGRATION_CONTRACT.md` documents contract v1.0, and
 
 ## Cloudflare deployment readiness — workers.dev
 
-This repository has no application deployment workflow; the visible GitHub Actions workflows are Copilot automations, not application deployment. Configure the environment on the actual Next.js hosting platform. Do not deploy or change DNS until the owner explicitly approves. All items below remain required before production use:
+No Cloudflare account was authenticated from this workspace, so the preview Worker has not been remotely deployed and the production Worker has not been deployed. Do not change DNS or publish production without explicit owner approval. All items below remain required before production use:
 
 - [ ] Replace single-owner Basic Auth with the selected production identity provider before multi-user use; preserve server-side ownership checks, origin protections, and HTTPS.
-- [ ] Create the Cloudflare D1 database and R2 bucket listed in the Cloudflare Workers section, replace the placeholder D1 ID in `wrangler.jsonc`, apply migrations remotely, and verify persistence in a staging Worker across deploy/restart.
+- [ ] Create separate preview and production D1 databases and R2 buckets; set each `database_id` in its corresponding Wrangler D1 binding, apply migrations, deploy `tinanai2-preview`, and verify auth, persistence, generation (if an approved provider is configured), export, and restart recovery.
 - [ ] Configure D1/R2 backups, retention, restore drills, and distributed rate limits before production. Existing filesystem-only projects require a separately planned migration.
-- [ ] Configure host-side server-only secrets: `TINAN_AUTH_USERNAME`, a strong `TINAN_AUTH_PASSWORD`, `TINAN_AI_PROVIDER=openai-compatible`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL`; the default `TINAN_AI_BASE_URL` is `https://openrouter.ai/api/v1`, with `TINAN_AI_TIMEOUT_MS` optional. Map the existing OpenRouter secret into `TINAN_AI_API_KEY` in the application host’s secret manager; GitHub Actions secrets do not automatically reach the running app. Keep file reading disabled unless specifically required and authorized.
+- [ ] Configure the preview and production Worker runtime variables and secrets listed above in Cloudflare's **Settings → Variables and Secrets**. Keep the two environments' credentials separate; only enable paid provider requests when approved.
 - [ ] Keep project execution disabled. Any future execution feature needs a separately reviewed isolated execution service; do not enable it by setting a flag or exposing Docker to the Worker.
-- [ ] Verify HTTPS, security headers, and secure cookie settings on the assigned `workers.dev` endpoint.
+- [ ] Verify the Next.js `proxy.ts` authentication behavior on the remote Cloudflare preview; OpenNext reports Node.js proxy middleware support as experimental.
+- [ ] Verify HTTPS and security headers on both `workers.dev` endpoints; production remains on `workers.dev` until a custom domain and DNS change are separately approved.
 - [ ] Configure distributed rate limits and execution budgets, provider and sandbox timeouts, structured redacted audit logs, metrics/alerts, error tracking, and operational runbooks. Ensure logs never contain provider keys or sensitive project contents.
 - [ ] Validate generation, file persistence, export, authorization/isolation, backup restoration, sandbox checks, cancellation, and failure recovery in staging. Run dependency/security checks and production build before requesting deployment approval.
 - [ ] Prepare a rollback plan and verify backups and monitoring before any approved release.
 
 ## Dependency audit
 
-The latest `npm audit` run for the checked-in lockfile reports 10 findings (8 high, 2 moderate, 0 critical). Findings include the current Tailwind 3 dependency tree (`chokidar`/`braces`, `fast-glob`/`micromatch`/`braces`, and `postcss-nested`/`postcss-selector-parser`), the Next 15 lint-config dependency tree, and `@opennextjs/cloudflare@1.19.11` (the advisory affects versions through 1.20.1).
-
-Although npm suggested `@opennextjs/cloudflare@1.20.12`, a lockfile trial with that adapter and its required Next.js 15.5.28 patch increased the audit total to 13 (11 high, 2 moderate), including new `@node-minify/core`/`glob` findings through the OpenNext AWS adapter. The trial was reverted and no adapter migration is included. Other suggested remediations involve Tailwind CSS 4 or downgrading `eslint-config-next` to 14.2.35, which is not compatible with the installed Next 15 line. No force overrides were retained; reassess the dependency graph and validate a safe adapter update before deployment.
+The checked-in lockfile was audited after the framework and Cloudflare adapter upgrade; `npm audit` reported zero vulnerabilities. Re-run the audit before each deployment because advisories and compatible fixes change.
 
 ## Local development and validation
 

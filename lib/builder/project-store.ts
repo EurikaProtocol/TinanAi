@@ -264,9 +264,14 @@ export async function setProjectTaskPlan(task: ProjectTask, plan: ProjectPlan): 
   return true;
 }
 
-export async function approveProjectTask(id: string, ownerId: string): Promise<ProjectTask | undefined> {
+export async function approveProjectTask(
+  id: string,
+  ownerId: string,
+  confirmOverwrite = false,
+): Promise<ProjectTask | undefined> {
   const task = await getProjectTask(id, ownerId);
   if (!task || task.status !== 'awaiting_approval') return task;
+  if (task.projectId && !confirmOverwrite) return task;
   const next: ProjectTask = {
     ...task,
     status: 'generating',

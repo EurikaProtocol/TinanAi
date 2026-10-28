@@ -15,8 +15,15 @@ export async function POST(request: Request, context: Context) {
   } catch {
     return NextResponse.json({ error: 'Request body must be valid JSON and no larger than 1 KiB.' }, { status: 400 });
   }
-  if (typeof body !== 'object' || body === null || !('approved' in body) || typeof body.approved !== 'boolean') {
+  if (typeof body !== 'object' || body === null) {
     return NextResponse.json({ error: 'An approved boolean is required.' }, { status: 400 });
+  }
+  const approval = body as Record<string, unknown>;
+  if (typeof approval.approved !== 'boolean') {
+    return NextResponse.json({ error: 'An approved boolean is required.' }, { status: 400 });
+  }
+  if ('confirmOverwrite' in approval && typeof approval.confirmOverwrite !== 'boolean') {
+    return NextResponse.json({ error: 'confirmOverwrite must be a boolean.' }, { status: 400 });
   }
   const { id } = await context.params;
   const current = await getProjectTaskForOwner(id, ownerId);
@@ -24,11 +31,14 @@ export async function POST(request: Request, context: Context) {
   if (current.status !== 'awaiting_approval') {
     return NextResponse.json({ error: 'This project plan is no longer awaiting approval.' }, { status: 409 });
   }
-  if (!body.approved) {
+  if (approval.approved && current.projectId && approval.confirmOverwrite !== true) {
+    return NextResponse.json({ error: 'Confirm that generation may replace files in this project before approving.' }, { status: 400 });
+  }
+  if (!approval.approved) {
     const task = await cancelProjectTask(id, ownerId);
     return NextResponse.json({ task });
   }
-  const task = await approveProjectTask(id, ownerId);
+  const task = await approveProjectTask(id, ownerId, approval.confirmOverwrite === true);
   if (!task || task.status !== 'generating') {
     return NextResponse.json({ error: 'Project plan approval could not be recorded.' }, { status: 409 });
   }

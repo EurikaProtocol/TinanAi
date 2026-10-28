@@ -35,6 +35,38 @@
   "vars": {
     "TINAN_SANDBOX_VERIFIED": "false"
   },
+  "env": {
+    "preview": {
+      "name": "tinanai2-preview",
+      "workers_dev": true,
+      "assets": {
+        "directory": ".open-next/assets",
+        "binding": "ASSETS"
+      },
+      "services": [
+        {
+          "binding": "WORKER_SELF_REFERENCE",
+          "service": "tinanai2-preview"
+        }
+      ],
+      "d1_databases": [
+        {
+          "binding": "TINAN_DB",
+          "database_name": "tinan-ai-metadata-preview",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "TINAN_PROJECT_FILES",
+          "bucket_name": "tinan-ai-project-files-preview"
+        }
+      ],
+      "vars": {
+        "TINAN_SANDBOX_VERIFIED": "false"
+      }
+    }
+  },
   "observability": {
     "enabled": true
   }
