@@ -31,46 +31,63 @@ No real provider credentials were available during implementation, so provider i
 
 ## Cloudflare Workers
 
-This project uses `@opennextjs/cloudflare@1.19.11` with Next.js `15.5.27` (the adapter peer range includes Next `>=15.5.18 <16`) and Wrangler `4.150.0` (Node.js 22 or newer). The adapter version was chosen instead of `1.20.11` because the latter added npm audit findings in this repository's lockfile. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` previews that bundle locally, and `npm run deploy:cloudflare` deploys it when explicitly invoked. Sandbox checks remain disabled by default.
+This project uses Next.js `16.4.3`, `@opennextjs/cloudflare@1.20.13`, and Wrangler `4.150.0` (Node.js 22 or newer). The pinned Next/OpenNext versions satisfy the adapter's supported peer range. `.node-version` selects Node 22. OpenNext builds the app and Worker bundle with `npm run build:cloudflare`; `npm run preview:cloudflare` runs that bundle locally, `npm run deploy:cloudflare:preview` deploys the isolated preview Worker, and `npm run deploy:cloudflare` targets the production Worker. The production command must only be run after preview verification and explicit release approval. Sandbox checks remain disabled by default.
 
 Project metadata, project and agent tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project/task lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the store modules between operations to simulate separate requests and a Worker restart.
 
 ### Provision durable storage
 
-Create the Cloudflare resources from the repository root:
+Create separate durable resources for preview and production from the repository root:
 
 ```bash
 npx wrangler d1 create tinan-ai-metadata
 npx wrangler r2 bucket create tinan-ai-project-files
+npx wrangler d1 create tinan-ai-metadata-preview
+npx wrangler r2 bucket create tinan-ai-project-files-preview
 ```
 
-The deployment environment used for this work has no authenticated Cloudflare account, so no real D1 database could be verified or configured. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`), run the commands above in the intended account, and set the `database_id` property in the `TINAN_DB` binding in `wrangler.jsonc` to the exact ID returned by `npx wrangler d1 create`. Do not deploy until the binding contains the real ID. Keep the names and binding identifiers aligned with the config:
+The deployment environment used for this work has no authenticated Cloudflare account, so no remote preview or production service could be created or verified. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`) and create the resources above in the intended account. Add each returned D1 ID as `database_id` in its matching `TINAN_DB` binding in `wrangler.jsonc`; never point preview at the production database. Do not deploy until the IDs and resources are present. Keep the names and binding identifiers aligned with the config:
 
 | Resource | Wrangler binding | Resource name |
 | --- | --- | --- |
 | D1 database | `TINAN_DB` | `tinan-ai-metadata` |
 | R2 bucket | `TINAN_PROJECT_FILES` | `tinan-ai-project-files` |
+| Preview D1 database | `TINAN_DB` in `env.preview` | `tinan-ai-metadata-preview` |
+| Preview R2 bucket | `TINAN_PROJECT_FILES` in `env.preview` | `tinan-ai-project-files-preview` |
 
 Apply the D1 migration to the remote database before deploying:
 
 ```bash
 npx wrangler d1 migrations apply tinan-ai-metadata --remote
+npx wrangler d1 migrations apply tinan-ai-metadata-preview --remote --env preview
 ```
 
-For local Worker preview, initialize Wrangler's local D1 database first:
+For local Worker development, initialize Wrangler's local D1 database first:
 
 ```bash
 npx wrangler d1 migrations apply tinan-ai-metadata --local
 npm run preview:cloudflare
 ```
 
-Wrangler persists local D1/R2 preview state under the ignored `.wrangler/` directory. Cloudflare production and preview Workers need both bindings configured; the names above are already declared in `wrangler.jsonc`. D1 stores project and agent-task JSON metadata, ownership, check/repair state, and locks. R2 stores source files and durable rollback snapshots. Do not manually expose either binding to browser code.
+The top-level `tinanai2` Worker is the production target. The Wrangler `preview` environment deploys `tinanai2-preview` to its `workers.dev` URL and has its own D1 and R2 resources. D1 stores project and agent-task JSON metadata, ownership, check/repair state, and locks; R2 stores generated files and rollback snapshots. These bindings are server-side only and must never be exposed to browser code. Wrangler persists local state under the ignored `.wrangler/` directory.
+
+### Preview-first release
+
+The authenticated Cloudflare account is not available in this repository workspace. The following commands are the required operator steps after provisioning the preview resources and inserting its D1 ID into `env.preview`:
+
+```bash
+npx wrangler login
+npx wrangler d1 migrations apply tinan-ai-metadata-preview --remote --env preview
+npm run deploy:cloudflare:preview
+```
+
+The preview service URL is `https://tinanai2-preview.<account-subdomain>.workers.dev` after a successful deployment. Configure and verify the preview Worker's runtime settings and bindings before testing it. Do not promote or deploy production until the preview has been verified and the owner explicitly approves release. No DNS, custom domain, production deployment, or production secret changes are part of these steps.
 
 Project persistence tests verify create, update, retrieve, export, and rollback through newly loaded storage modules against the same D1/R2 backing data. Agent-task tests verify owner-scoped reads, durable transitions, interrupted-task recovery, and compare-and-set behavior across store reloads. These exercise the durable binding contract across request/module restarts; production Cloudflare account provisioning and remote persistence have not been tested from this environment.
 
 ### Workers Builds screen
 
-In **Workers & Pages → Workers → Build → Build settings**, use:
+For the production service's **Workers Builds → Build settings**, use:
 
 - **Production branch:** `main` (merge this feature branch into `main` before enabling production builds).
 - **Root directory:** `/` (repository root).
@@ -79,13 +96,13 @@ In **Workers & Pages → Workers → Build → Build settings**, use:
 - **Build environment variable:** `NODE_VERSION=22` (also recorded in `.node-version`).
 - **Install command, if shown:** `npm ci`.
 
-This repository currently has only Copilot automation workflows, not an application deployment workflow. Workers Builds must install and publish the app from the application repository; GitHub Actions secrets do not automatically become Cloudflare runtime bindings.
+Create a separate preview Worker/branch deployment using `env.preview`; it must use `npm run deploy:cloudflare:preview`, not the production command. This repository has no application deployment workflow. Cloudflare runtime bindings and secrets are configured on each Worker/environment; GitHub Actions secrets do not automatically become runtime bindings. Do not enable automatic production promotion.
 
 The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
 
 ### Worker runtime settings
 
-Set the following under the Worker's **Settings → Variables and Secrets** for each environment (production and preview/development separately).
+Set the following under the matching Worker's **Settings → Variables and Secrets**. Configure preview and production separately; do not copy production credentials or point preview to production storage.
 
 | Name | Type | Value |
 | --- | --- | --- |

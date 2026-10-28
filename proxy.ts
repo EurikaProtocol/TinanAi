@@ -31,7 +31,7 @@ function unauthorized(): Response {
   });
 }
 
-export async function middleware(request: NextRequest): Promise<Response> {
+export async function proxy(request: NextRequest): Promise<Response> {
   if (request.nextUrl.pathname === '/' && (request.method === 'GET' || request.method === 'HEAD')) {
     return NextResponse.next();
   }
