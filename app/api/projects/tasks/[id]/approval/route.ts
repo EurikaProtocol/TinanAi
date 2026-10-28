@@ -18,17 +18,23 @@ export async function POST(request: Request, context: Context) {
   if (typeof body !== 'object' || body === null || !('approved' in body) || typeof body.approved !== 'boolean') {
     return NextResponse.json({ error: 'An approved boolean is required.' }, { status: 400 });
   }
+  if ('confirmOverwrite' in body && typeof body.confirmOverwrite !== 'boolean') {
+    return NextResponse.json({ error: 'confirmOverwrite must be a boolean.' }, { status: 400 });
+  }
   const { id } = await context.params;
   const current = await getProjectTaskForOwner(id, ownerId);
   if (!current) return NextResponse.json({ error: 'Project task not found.' }, { status: 404 });
   if (current.status !== 'awaiting_approval') {
     return NextResponse.json({ error: 'This project plan is no longer awaiting approval.' }, { status: 409 });
   }
+  if (body.approved && current.projectId && body.confirmOverwrite !== true) {
+    return NextResponse.json({ error: 'Confirm that generation may replace files in this project before approving.' }, { status: 400 });
+  }
   if (!body.approved) {
     const task = await cancelProjectTask(id, ownerId);
     return NextResponse.json({ task });
   }
-  const task = await approveProjectTask(id, ownerId);
+  const task = await approveProjectTask(id, ownerId, body.confirmOverwrite === true);
   if (!task || task.status !== 'generating') {
     return NextResponse.json({ error: 'Project plan approval could not be recorded.' }, { status: 409 });
   }
