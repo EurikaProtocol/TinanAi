@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { delegatedOwnerId, verifyDelegation } from '@/lib/delegation';
 
 const encoder = new TextEncoder();
 
@@ -85,9 +86,31 @@ export async function proxy(request: NextRequest): Promise<Response> {
       return unauthorized();
     }
 
-    const ownerId = Array.from(await digest(username), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    let ownerId = Array.from(await digest(username), (byte) => byte.toString(16).padStart(2, '0')).join('');
     const requestHeaders = new Headers(request.headers);
     requestHeaders.delete('authorization');
+    const delegation = request.headers.get('x-eureka-delegation');
+    requestHeaders.delete('x-eureka-delegation');
+    if (delegation !== null) {
+      // Per-user delegation is off by default; a delegated request is refused rather than silently served as the single owner.
+      if (process.env.TINAN_MULTI_USER_ENABLED !== 'true') {
+        return new Response(JSON.stringify({ error: 'Multi-user delegation is disabled.', code: 'MULTI_USER_DISABLED' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        });
+      }
+      const secret = process.env.TINAN_DELEGATION_SECRET;
+      const subject = secret && secret !== password
+        ? await verifyDelegation(secret, delegation, Math.floor(Date.now() / 1000))
+        : null;
+      if (!subject) {
+        return new Response(JSON.stringify({ error: 'Delegation token is invalid or expired.', code: 'INVALID_DELEGATION' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        });
+      }
+      ownerId = await delegatedOwnerId(subject);
+    }
     requestHeaders.set('x-tinan-owner-id', ownerId);
     requestHeaders.set('x-tinan-owner-proof', await signOwner(ownerId, password));
     const response = NextResponse.next({ request: { headers: requestHeaders } });

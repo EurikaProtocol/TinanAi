@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { GeneratedProject, ProjectPlan } from '../agent/openai-provider';
 import type { ProjectTaskStatus } from './task-status';
 import { getProjectStorageBindings } from './cloudflare-storage';
+import { planDigest } from './digest';
+
+export class PlanDigestMismatchError extends Error {
+  readonly code = 'PLAN_DIGEST_MISMATCH';
+}
 
 export type ProjectRecord = {
   id: string;
@@ -34,6 +39,8 @@ export type ProjectTask = {
   projectId: string | null;
   requirements: string;
   plan: ProjectPlan | null;
+  /** Digest of `plan`, fixed when the plan is stored. The plan is immutable afterwards. */
+  planDigest?: string | null;
   check: string | null;
   status: ProjectTaskStatus;
   progress: string[];
@@ -159,6 +166,7 @@ export async function getProjectTask(id: string, ownerId: string): Promise<Proje
   try {
     const task = JSON.parse(row.record_json) as ProjectTask;
     if (task.id !== id || task.ownerId !== ownerId) return undefined;
+    if (task.plan && !task.planDigest) task.planDigest = planDigest(task.plan);
     if (['planning', 'generating', 'committing'].includes(task.status) &&
         Date.parse(task.updatedAt) < Date.now() - 15 * 60 * 1000) {
       const interruptedStatus = task.status;
@@ -247,6 +255,7 @@ export async function setProjectTaskPlan(task: ProjectTask, plan: ProjectPlan): 
   const next: ProjectTask = {
     ...stored,
     plan,
+    planDigest: planDigest(plan),
     status: 'awaiting_approval',
     progress: stored.progress.concat('Project plan is ready for your review and approval.'),
     updatedAt: new Date().toISOString(),
@@ -268,9 +277,15 @@ export async function approveProjectTask(
   id: string,
   ownerId: string,
   confirmOverwrite = false,
+  expectedPlanDigest?: string,
 ): Promise<ProjectTask | undefined> {
   const task = await getProjectTask(id, ownerId);
   if (!task || task.status !== 'awaiting_approval') return task;
+  // The plan is immutable once awaiting approval; verify the stored plan still matches its digest and the approver's digest.
+  if (!task.plan || task.planDigest !== planDigest(task.plan) ||
+      (expectedPlanDigest !== undefined && expectedPlanDigest !== task.planDigest)) {
+    throw new PlanDigestMismatchError('The plan does not match the digest that was approved.');
+  }
   if (task.projectId && !confirmOverwrite) return task;
   const next: ProjectTask = {
     ...task,
