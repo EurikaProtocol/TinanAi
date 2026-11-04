@@ -877,3 +877,134 @@ test('sandbox never executes generated commands even when configured as verified
     resetProjectStorage();
   }
 });
+
+const digestLib = require('../.test-build/lib/builder/digest.js');
+const { buildTaskManifest, ManifestError } = require('../.test-build/lib/builder/manifest.js');
+const delegation = require('../.test-build/lib/delegation.js');
+const samplePlan = { summary: 'Plan', technology: ['Node.js'], features: ['Greeting'], steps: ['Write file'] };
+
+async function approvedCompletedTask(owner, plan = samplePlan) {
+  const task = await createProjectTask('Build', owner, 'generation', null, null, 'planning');
+  assert.equal(await setProjectTaskPlan(task, plan), true);
+  const approved = await approveProjectTask(task.id, owner, false, digestLib.planDigest(plan));
+  assert.equal(approved.status, 'generating');
+  const project = await createProject(generatedProject, owner);
+  approved.projectId = project.id;
+  await freshProjectStore().updateProjectTask(approved, 'completed', 'done');
+  return { task, project };
+}
+
+test('plan digest matches the published EurekaCore preimage and changes with any plan edit', () => {
+  const crypto = require('node:crypto');
+  const expected = `0x${crypto.createHash('sha256').update(JSON.stringify(['eureka.builder-plan.v1', 'Plan', ['Node.js'], ['Greeting'], ['Write file']])).digest('hex')}`;
+  assert.equal(digestLib.planDigest(samplePlan), expected);
+  for (const change of [{ summary: 'Plan2' }, { technology: ['Go'] }, { features: [] }, { steps: ['x'] }]) {
+    assert.notEqual(digestLib.planDigest({ ...samplePlan, ...change }), expected);
+  }
+  assert.equal(digestLib.isDigest(expected), true);
+  assert.equal(digestLib.isDigest('0xABC'), false);
+});
+
+test('approval with a mismatched plan digest is rejected without starting generation', async () => {
+  resetProjectStorage();
+  try {
+    const task = await createProjectTask('Build', ownerA, 'generation', null, null, 'planning');
+    await setProjectTaskPlan(task, samplePlan);
+    const wrong = digestLib.planDigest({ ...samplePlan, summary: 'Different' });
+    await assert.rejects(approveProjectTask(task.id, ownerA, false, wrong), (e) => e.code === 'PLAN_DIGEST_MISMATCH');
+    assert.equal((await getProjectTaskForOwner(task.id, ownerA)).status, 'awaiting_approval');
+    const ok = await approveProjectTask(task.id, ownerA, false, digestLib.planDigest(samplePlan));
+    assert.equal(ok.status, 'generating');
+  } finally {
+    resetProjectStorage();
+  }
+});
+
+test('a plan altered after storage cannot be approved', async () => {
+  resetProjectStorage();
+  try {
+    const task = await createProjectTask('Build', ownerA, 'generation', null, null, 'planning');
+    await setProjectTaskPlan(task, samplePlan);
+    const { TINAN_DB } = await require('../.test-build/lib/builder/cloudflare-storage.js').getProjectStorageBindings();
+    const row = await TINAN_DB.prepare('SELECT record_json FROM project_tasks WHERE id = ?').bind(task.id).first();
+    const record = JSON.parse(row.record_json);
+    record.plan.steps = ['rm -rf /'];
+    await TINAN_DB.prepare('UPDATE project_tasks SET record_json = ? WHERE id = ?').bind(JSON.stringify(record), task.id).run();
+    await assert.rejects(approveProjectTask(task.id, ownerA, false), (e) => e.code === 'PLAN_DIGEST_MISMATCH');
+  } finally {
+    resetProjectStorage();
+  }
+});
+
+test('manifest is owner-scoped, completed-only, and carries per-file SHA-256 that matches stored content', async () => {
+  resetProjectStorage();
+  try {
+    const { task, project } = await approvedCompletedTask(ownerA);
+    const manifest = await buildTaskManifest(task.id, ownerA);
+    const content = generatedProject.files[0].content;
+    assert.equal(manifest.contractVersion, '1.1');
+    assert.equal(manifest.planDigest, digestLib.planDigest(samplePlan));
+    assert.deepEqual(manifest.files, [{ path: 'src/index.ts', bytes: Buffer.byteLength(content), sha256: digestLib.contentDigest(content) }]);
+    assert.equal(manifest.manifestDigest, digestLib.manifestDigest(manifest.planDigest, manifest.files));
+    assert.equal(manifest.projectId, project.id);
+    await assert.rejects(buildTaskManifest(task.id, ownerB), (e) => e instanceof ManifestError && e.status === 404);
+    const pending = await createProjectTask('Build', ownerA, 'generation', null, null, 'planning');
+    await assert.rejects(buildTaskManifest(pending.id, ownerA), (e) => e instanceof ManifestError && e.status === 409);
+  } finally {
+    resetProjectStorage();
+  }
+});
+
+test('manifest refuses oversized projects', async () => {
+  resetProjectStorage();
+  try {
+    const task = await createProjectTask('Build', ownerA, 'generation', null, null, 'planning');
+    await setProjectTaskPlan(task, samplePlan);
+    const approved = await approveProjectTask(task.id, ownerA, false, digestLib.planDigest(samplePlan));
+    const project = await createProject(generatedProject, ownerA);
+    const { TINAN_DB } = await require('../.test-build/lib/builder/cloudflare-storage.js').getProjectStorageBindings();
+    const row = await TINAN_DB.prepare('SELECT record_json FROM projects WHERE id = ?').bind(project.id).first();
+    const record = JSON.parse(row.record_json);
+    record.files = Array.from({ length: 25 }, (_, i) => `src/f${i}.ts`);
+    await TINAN_DB.prepare('UPDATE projects SET record_json = ? WHERE id = ?').bind(JSON.stringify(record), project.id).run();
+    approved.projectId = project.id;
+    await freshProjectStore().updateProjectTask(approved, 'completed', 'done');
+    await assert.rejects(buildTaskManifest(task.id, ownerA), (e) => e.status === 422);
+  } finally {
+    resetProjectStorage();
+  }
+});
+
+test('cancelling an awaiting-approval task is durable and blocks later approval', async () => {
+  resetProjectStorage();
+  try {
+    const task = await createProjectTask('Build', ownerA, 'generation', null, null, 'planning');
+    await setProjectTaskPlan(task, samplePlan);
+    const cancelled = await freshProjectStore().cancelProjectTask(task.id, ownerA);
+    assert.equal(cancelled.status, 'cancelled');
+    const after = await approveProjectTask(task.id, ownerA, false, digestLib.planDigest(samplePlan));
+    assert.equal(after.status, 'cancelled');
+  } finally {
+    resetProjectStorage();
+  }
+});
+
+test('delegation tokens are verified, expire, bind audience, and reject tampering', async () => {
+  const secret = 's'.repeat(40);
+  const now = 1_700_000_000;
+  const token = await delegation.signDelegation(secret, 'Alice@Example.com', now, 120);
+  assert.equal(await delegation.verifyDelegation(secret, token, now + 10), 'alice@example.com');
+  assert.equal(await delegation.verifyDelegation(secret, token, now + 121), null);
+  assert.equal(await delegation.verifyDelegation(secret, token, now - 31), null);
+  assert.equal(await delegation.verifyDelegation('t'.repeat(40), token, now), null);
+  assert.equal(await delegation.verifyDelegation(undefined, token, now), null);
+  assert.equal(await delegation.verifyDelegation(secret, token.slice(0, -1) + (token.endsWith('0') ? '1' : '0'), now), null);
+  const [v, payload, sig] = token.split('.');
+  const forged = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(payload, 'base64url')), sub: 'mallory@example.com' })).toString('base64url');
+  assert.equal(await delegation.verifyDelegation(secret, `${v}.${forged}.${sig}`, now), null);
+  await assert.rejects(delegation.signDelegation(secret, 'a@b.co', now, 301));
+  await assert.rejects(delegation.signDelegation('short', 'a@b.co', now));
+  const a = await delegation.delegatedOwnerId('alice@example.com');
+  assert.match(a, /^[0-9a-f]{64}$/);
+  assert.notEqual(a, await delegation.delegatedOwnerId('bob@example.com'));
+});

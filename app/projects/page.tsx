@@ -31,6 +31,7 @@ type BuilderTask = {
   id: string;
   projectId: string | null;
   status: ProjectTaskStatus;
+  planDigest?: string | null;
   plan: { summary: string; technology: string[]; features: string[]; steps: string[] } | null;
   progress: string[];
   errors: string[];
@@ -138,6 +139,7 @@ export default function ProjectsPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           approved,
+          ...(task.planDigest ? { planDigest: task.planDigest } : {}),
           confirmOverwrite: task.projectId !== null && overwriteConfirmation === task.id,
         }),
       });

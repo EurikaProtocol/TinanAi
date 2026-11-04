@@ -1,6 +1,7 @@
 import { after, NextResponse } from 'next/server';
 import { getRequestOwnerId } from '@/lib/auth';
-import { approveProjectTask, cancelProjectTask, getProjectTaskForOwner } from '@/lib/builder/project-store';
+import { isDigest } from '@/lib/builder/digest';
+import { approveProjectTask, cancelProjectTask, getProjectTaskForOwner, PlanDigestMismatchError } from '@/lib/builder/project-store';
 import { runProjectGeneration } from '@/lib/builder/runner';
 
 type Context = { params: Promise<{ id: string }> };
@@ -25,6 +26,13 @@ export async function POST(request: Request, context: Context) {
   if ('confirmOverwrite' in approval && typeof approval.confirmOverwrite !== 'boolean') {
     return NextResponse.json({ error: 'confirmOverwrite must be a boolean.' }, { status: 400 });
   }
+  if ('planDigest' in approval && !isDigest(approval.planDigest)) {
+    return NextResponse.json({ error: 'planDigest must be a 0x-prefixed SHA-256 digest.', code: 'INVALID_PLAN_DIGEST' }, { status: 400 });
+  }
+  const suppliedDigest = typeof approval.planDigest === 'string' ? approval.planDigest : undefined;
+  if (approval.approved && suppliedDigest === undefined && process.env.TINAN_REQUIRE_PLAN_DIGEST === 'true') {
+    return NextResponse.json({ error: 'planDigest is required to approve a plan.', code: 'PLAN_DIGEST_REQUIRED' }, { status: 400 });
+  }
   const { id } = await context.params;
   const current = await getProjectTaskForOwner(id, ownerId);
   if (!current) return NextResponse.json({ error: 'Project task not found.' }, { status: 404 });
@@ -38,11 +46,20 @@ export async function POST(request: Request, context: Context) {
     const task = await cancelProjectTask(id, ownerId);
     return NextResponse.json({ task });
   }
-  const task = await approveProjectTask(id, ownerId, approval.confirmOverwrite === true);
+  let task: Awaited<ReturnType<typeof approveProjectTask>>;
+  try {
+    task = await approveProjectTask(id, ownerId, approval.confirmOverwrite === true, suppliedDigest);
+  } catch (error) {
+    if (error instanceof PlanDigestMismatchError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
+    }
+    throw error;
+  }
   if (!task || task.status !== 'generating') {
     return NextResponse.json({ error: 'Project plan approval could not be recorded.' }, { status: 409 });
   }
-  after(() => runProjectGeneration(task));
+  const approvedTask = task;
+  after(() => runProjectGeneration(approvedTask));
   return NextResponse.json({ task }, { status: 202 });
 }
 

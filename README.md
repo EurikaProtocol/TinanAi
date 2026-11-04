@@ -23,6 +23,8 @@ All provider secrets are server-only. Do not prefix these values with `NEXT_PUBL
 | `TINAN_AI_BASE_URL` | No | OpenAI-compatible API base URL; defaults to `https://openrouter.ai/api/v1`. HTTPS is required except for localhost development. |
 | `TINAN_AI_TIMEOUT_MS` | No | Provider timeout from 1,000 to 60,000 ms; defaults to 20,000 ms. |
 | `TINAN_AUTH_USERNAME` | Required | Single-owner Basic Auth username for the application and API. |
+| `TINAN_REQUIRE_PLAN_DIGEST` | Optional | `true` makes `planDigest` mandatory on approval. |
+| `TINAN_MULTI_USER_ENABLED` / `TINAN_DELEGATION_SECRET` | Optional | Delegated per-user ownership. Off by default; see Multi-user delegation. |
 | `TINAN_AUTH_PASSWORD` | Required | Single-owner Basic Auth password; must be at least 32 characters. Set server-side and use HTTPS in production. |
 | `TINAN_ENABLE_FILE_READING` | No | Must be `true` to allow explicitly authorized workspace file reads. |
 | `TINAN_SANDBOX_VERIFIED` | No | Execution remains disabled. Setting this value does not enable project checks. |
@@ -183,6 +185,28 @@ EurekaCore's `docs/TINANAI_INTEGRATION_CONTRACT.md` documents contract v1.0, and
 - **Authentication:** HTTPS server-to-server calls use TINAN AI's HTTP Basic Auth (`TINAN_AUTH_USERNAME` and `TINAN_AUTH_PASSWORD`) and a same-origin `Origin` on non-GET requests. EurekaCore keeps its `TINANAI_BASE_URL`, `TINANAI_USERNAME`, and `TINANAI_PASSWORD` as server-side Worker secrets. TINAN AI still has a single shared owner identity, not per-service grants or multi-user authorization.
 - **Task state and results:** Agent tasks and transitions persist in D1 and are owner-scoped. A Worker interruption leaves active planning/execution tasks recoverable as a persisted failure when next read after the 15-minute stale threshold. EurekaCore maps supported task status, summary, plan notes, and registered tool results to its strict contract; proposed actions remain advisory and carry no authority.
 - **Verified limits:** EurekaCore contract tests use a fake `fetch`; no authorized live request to a deployed TINAN AI service has been verified. The TINAN AI API remains protected by the documented Basic Auth and owner checks; this change does not establish service-level authorization, idempotent submission, or real Cloudflare D1 availability.
+
+## EurekaCore integration contract v1.1 (digest, manifest, delegation)
+
+Contract v1.1 is additive to v1.0 and is mirrored in EurekaCore's `docs/TINANAI_INTEGRATION_CONTRACT.md`.
+
+| Capability | Behaviour | Status |
+| --- | --- | --- |
+| Plan digest | `planDigest = sha256(JSON.stringify(['eureka.builder-plan.v1', summary, technology, features, steps]))`, `0x`-prefixed lowercase hex, fixed when the plan is stored. Returned as `task.planDigest`. | unit-tested |
+| Approval | `POST /api/projects/tasks/:id/approval` accepts `{approved, planDigest?, confirmOverwrite?}`. A digest that differs from the stored plan, or a stored plan that no longer hashes to its digest, returns **409 `PLAN_DIGEST_MISMATCH`** and generation does not start. A malformed digest returns 400. Set `TINAN_REQUIRE_PLAN_DIGEST=true` to make the digest mandatory (400 `PLAN_DIGEST_REQUIRED`). | unit-tested (store); route wiring typechecked |
+| Manifest | `GET /api/projects/tasks/:id/manifest` returns `{manifest:{contractVersion:'1.1', taskId, projectId, ownerId, planDigest, files:[{path,bytes,sha256}], totalBytes, manifestDigest}}` for a **completed** task owned by the caller. Never returns contents. Limits: 1-24 files, 128 KiB per file, 256 KiB total (422 `LIMIT_EXCEEDED`); 404 for unknown/other-owner tasks; 409 `NOT_COMPLETED`. | unit-tested |
+| File read | `GET /api/projects/:id/files?path=` additionally returns `bytes` and `sha256` (SHA-256 of UTF-8 content, `0x` hex). | typechecked |
+| Cancellation | `POST /api/projects/tasks/:id/cancel` is a durable compare-and-set; a cancelled task cannot be approved. | unit-tested |
+| Durable state | Tasks, plans and digests persist in D1; files in R2. No new migration is required: `planDigest` is stored inside the existing task JSON and derived for older tasks. | unit-tested |
+
+### Multi-user delegation (disabled by default)
+
+The Basic-auth service credential stays mandatory. A trusted caller (EurekaCore) may additionally send `x-eureka-delegation: v1.<base64url payload>.<hex HMAC-SHA256>` signed with `TINAN_DELEGATION_SECRET` (at least 32 characters and different from the password). The payload is `{sub, aud:'tinan-ai', iat, exp}` with a lifetime of at most 300 s. The owner id becomes `sha256('tinan-delegated-owner:v1:' + sub)`, so each verified user sees only their own tasks and projects.
+
+- If the header is present while `TINAN_MULTI_USER_ENABLED` is not `true`, the request is rejected with 403 `MULTI_USER_DISABLED`; it is never served as the single owner.
+- Invalid, expired, wrong-audience or tampered tokens return 401 `INVALID_DELEGATION`.
+- Existing single-owner data stays under the original owner id and is not visible to delegated users.
+- Do not enable multi-user mode until EurekaCore persists the creating user per workflow and a live end-to-end isolation test passes.
 
 ## Cloudflare deployment readiness — workers.dev
 
