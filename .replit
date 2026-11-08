@@ -1,0 +1,42 @@
+modules = ["nodejs-24", "python-base-3.13", "postgresql-16"]
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+packages = ["tesseract"]
+
+[[ports]]
+localPort = 8081
+externalPort = 80
+
+[[ports]]
+localPort = 22481
+externalPort = 3000
+
+[userenv]
+
+[userenv.shared]
+VITE_REOWN_PROJECT_ID = "d40ec37964a5c31abab2ca4ec452955e"
+TINANAI_MAINNET_AUTHORIZED_DEPLOYER = "0x5D0435779b10234fD4941cc15fae8C7C86117E91"
+TINANAI_MAINNET_PAYMENT_CATALOG_URL = "https://tinaneureka.com/api/tinanai/payments/catalog"
+
+[userenv.production]
+TINANAI_PAYMENT_ADMIN_BOOTSTRAP_ENABLED = "true"

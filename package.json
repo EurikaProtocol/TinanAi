@@ -1,44 +1,24 @@
 {
-  "name": "nextjs",
-  "version": "0.1.0",
-  "private": true,
+  "name": "workspace",
+  "version": "0.0.0",
+  "license": "MIT",
   "scripts": {
-    "dev": "next dev",
-    "build": "opennextjs-cloudflare build && node scripts/verify-open-next.mjs",
-    "build:next": "next build",
-    "build:cloudflare": "npm run build",
-    "verify:cloudflare": "node scripts/verify-open-next.mjs",
-    "preview:cloudflare": "npm run build && wrangler dev",
-    "deploy:cloudflare": "npm run verify:cloudflare && opennextjs-cloudflare deploy",
-    "deploy:cloudflare:preview": "npm run verify:cloudflare && opennextjs-cloudflare deploy --env preview",
-    "start": "next start",
-    "lint": "eslint .",
-    "typecheck": "tsc --noEmit",
-    "test": "rm -rf .test-build && tsc --project tsconfig.test.json && node --test tests/*.test.cjs"
+    "contracts:compile": "pnpm --filter @workspace/tinanai-contracts run compile",
+    "contracts:test": "pnpm --filter @workspace/tinanai-contracts run test",
+    "contracts:deploy:local": "pnpm --filter @workspace/tinanai-contracts run deploy:local",
+    "contracts:deploy:sepolia": "pnpm --filter @workspace/tinanai-contracts run deploy:sepolia",
+    "contracts:deploy:mainnet": "pnpm --filter @workspace/tinanai-contracts run deploy:mainnet",
+    "preinstall": "sh -c 'rm -f package-lock.json yarn.lock; case \"$npm_config_user_agent\" in pnpm/*) ;; *) echo \"Use pnpm instead\" >&2; exit 1 ;; esac'",
+    "build": "pnpm run typecheck && pnpm -r --if-present run build",
+    "typecheck:libs": "tsc --build",
+    "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
+  "private": true,
   "dependencies": {
-    "@types/node": "20.6.2",
-    "@types/react": "19.3.0",
-    "@types/react-dom": "19.3.0",
-    "autoprefixer": "10.4.15",
-    "next": "16.4.3",
-    "postcss": "^8.5.30",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "tailwindcss": "3.3.3",
-    "typescript": "5.2.2"
-  },
-  "overrides": {
-    "postcss": "^8.5.30",
-    "@opennextjs/aws": "4.1.8"
+    "@replit/connectors-sdk": "^0.4.3"
   },
   "devDependencies": {
-    "@opennextjs/cloudflare": "1.20.13",
-    "eslint": "9.39.5",
-    "eslint-config-next": "16.4.3",
-    "wrangler": "4.154.0"
-  },
-  "engines": {
-    "node": ">=22"
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3"
   }
 }

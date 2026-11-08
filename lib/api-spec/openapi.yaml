@@ -1,0 +1,2604 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: tinanai
+    description: TINANAI AI assistance
+  - name: knowledge
+    description: Private, source-grounded TINANAI Knowledge Library
+paths:
+  /tinanai/payments/marketplace-orders:
+    get:
+      operationId: getTinanMarketplaceOrders
+      tags: [payments]
+      responses:
+        "200":
+          description: Own requests, or all requests for an administrator
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TinanMarketplaceOrder" }
+    post:
+      operationId: createTinanMarketplaceOrder
+      tags: [payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanMarketplaceOrderInput" }
+      responses:
+        "201":
+          description: One confirmed marketplace credit consumed and fulfillment request recorded
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanMarketplaceOrder" }
+        "402": { description: Confirmed marketplace credit required }
+  /tinanai/payments/admin/marketplace-orders/{id}:
+    patch:
+      operationId: updateTinanMarketplaceOrder
+      tags: [payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanMarketplaceResolution" }
+      responses:
+        "200":
+          description: Fulfilled request, or rejected request with its credit restored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanMarketplaceOrder" }
+        "403": { description: Administrator required }
+  /tinanai/payments/catalog:
+    get:
+      operationId: getTinanPaymentCatalog
+      tags: [payments]
+      responses:
+        "200":
+          description: Server-owned payment configuration and service prices
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanPaymentCatalog" }
+  /tinanai/payments/account:
+    get:
+      operationId: getTinanPaymentAccount
+      tags: [payments]
+      responses:
+        "200":
+          description: Authenticated account invoices and available service credits
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanPaymentAccount" }
+        "401": { description: Sign in required }
+  /tinanai/payments/challenge:
+    post:
+      operationId: createTinanPaymentChallenge
+      tags: [payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanWalletInput" }
+      responses:
+        "201":
+          description: One-use wallet ownership message, not a transaction
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanWalletChallenge" }
+        "401": { description: Sign in required }
+        "409": { description: Payments not configured }
+  /tinanai/payments/invoices:
+    post:
+      operationId: createTinanPaymentInvoice
+      tags: [payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanInvoiceInput" }
+      responses:
+        "201":
+          description: Immutable, expiring server quote
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanPaymentInvoice" }
+        "400": { description: Invalid request or wallet signature }
+        "401": { description: Sign in required }
+        "409": { description: Quote unavailable }
+  /tinanai/payments/invoices/{id}/verify:
+    post:
+      operationId: verifyTinanPaymentInvoice
+      tags: [payments]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanTransactionInput" }
+      responses:
+        "200":
+          description: Server-verified receipt status; only confirmed invoices grant credit
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanPaymentInvoice" }
+        "401": { description: Sign in required }
+        "404": { description: Invoice not found }
+        "409": { description: Transaction already assigned }
+        "503": { description: "RPC unavailable; retry safely" }
+  /tinanai/payments/admin:
+    get:
+      operationId: getTinanPaymentAdmin
+      tags: [payments]
+      responses:
+        "200":
+          description: Authorized administrator configuration and latest payments
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanPaymentAdmin" }
+        "403": { description: Administrator required }
+    put:
+      operationId: updateTinanPaymentAdmin
+      tags: [payments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanPaymentConfiguration" }
+      responses:
+        "200":
+          description: Persisted configuration
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanPaymentCatalog" }
+        "403": { description: Administrator required }
+        "409": { description: Configuration changed or token validation failed }
+  /tinanai/payments/admin/mainnet:
+    get:
+      operationId: getTinanMainnetConfig
+      responses:
+        "200":
+          description: Administrator-only deployment configuration; never includes RPC credentials
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanMainnetConfig" }
+    put:
+      operationId: updateTinanMainnetConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanMainnetApproval" }
+      responses:
+        "200":
+          description: Saved approval without enabling checkout or deployment
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanMainnetConfig" }
+  /tinanai/payments/admin/mainnet/diagnostics:
+    get:
+      operationId: getTinanMainnetDiagnostics
+      tags: [tinan-payments]
+      summary: Read-only new-token preparation and server RPC diagnostics; no simulation or persistence
+      responses:
+        "200":
+          description: Independent token preparation checks, not payment readiness or deployment authorization
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanMainnetDiagnostics" }
+        "401":
+          description: Sign-in required
+        "403":
+          description: Administrator required
+  /tinanai/payments/admin/mainnet/preflight:
+    post:
+      operationId: runTinanMainnetPreflight
+      deprecated: true
+      summary: Retired mixed preflight; always rejects without simulation or audit writes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TinanMainnetWallet" }
+      responses:
+        "409":
+          description: Legacy preflight is disabled; use the read-only diagnostics GET endpoint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TinanaiApiError" }
+  /tinanai/payments/admin/initialize:
+    post:
+      operationId: initializeTinanPayments
+      summary: Explicit administrator-only initialization; never overwrites existing settings
+      responses:
+        "200":
+          description: Audited initialization result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [initialized, changed]
+                properties:
+                  initialized: { type: boolean }
+                  changed: { type: boolean }
+        "401": { description: Sign-in required }
+        "403": { description: Administrator required }
+  /tinanai/payments/admin/export:
+    get:
+      operationId: exportTinanPayments
+      tags: [payments]
+      responses:
+        "200":
+          description: All payment records as spreadsheet-safe CSV
+          content:
+            text/csv:
+              schema: { type: string }
+        "403": { description: Administrator required }
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /eurika/overview:
+    get:
+      operationId: getEurikaOverview
+      tags: [eurika]
+      summary: Read public Ethereum explorer metadata for the EURIKA contract
+      responses:
+        "200":
+          description: Read-only contract metadata and public activity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EurikaOverview"
+  /tinanai/assist:
+    post:
+      operationId: assistTinanai
+      tags: [tinanai]
+      summary: Generate an assistant response for a TINANAI workspace tool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TinanaiAssistantRequest"
+      responses:
+        "200":
+          description: Assistant response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiAssistantResponse"
+        "400":
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Request limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "500":
+          description: The assistant could not complete the request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/research:
+    post:
+      operationId: researchTinanai
+      tags: [tinanai]
+      summary: Search the web and return source-linked research
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TinanaiResearchRequest"
+      responses:
+        "200":
+          description: Research answer with source annotations and token usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiResearchResponse"
+        "400":
+          description: Invalid research request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Request limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "502":
+          description: The search provider could not complete the request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/capabilities:
+    get:
+      operationId: getTinanaiCapabilities
+      tags: [tinanai]
+      summary: Report currently available TINANAI developer capabilities
+      responses:
+        "200":
+          description: Capability status without secret values
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiCapabilities"
+  /tinanai/builder/generate:
+    post:
+      operationId: generateTinanaiBuilder
+      tags: [tinanai]
+      summary: Inspect uploaded files and generate a Builder result
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/TinanaiBuilderRequest"
+      responses:
+        "200":
+          description: Builder output and inspected upload summaries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderResponse"
+        "400":
+          description: Invalid request or unsupported file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "413":
+          description: Upload or decompressed archive exceeds its safety limits
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Builder request limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "500":
+          description: The requested generation could not be completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "502":
+          description: The AI provider returned an invalid or empty result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/builder/exports/{id}:
+    get:
+      operationId: downloadTinanaiBuilderExport
+      tags: [tinanai]
+      summary: Download a short-lived cleaned dataset export
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 64
+            maxLength: 64
+      responses:
+        "200":
+          description: The cleaned dataset file
+          content:
+            text/csv:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: The short-lived file has expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects:
+    get:
+      operationId: listTinanaiBuilderProjects
+      tags: [tinanai]
+      summary: List projects owned by the signed-in user
+      responses:
+        "200":
+          description: User-owned projects
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectsResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    post:
+      operationId: createTinanaiBuilderProject
+      tags: [tinanai]
+      summary: Create an owned project and initial version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TinanaiBuilderProjectInput"
+      responses:
+        "201":
+          description: Created project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectResponse"
+        "400":
+          description: Invalid or unsafe project data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getTinanaiBuilderProject
+      tags: [tinanai]
+      summary: Get a project owned by the signed-in user
+      responses:
+        "200":
+          description: Project and editable files
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    patch:
+      operationId: updateTinanaiBuilderProject
+      tags: [tinanai]
+      summary: Save project files, metadata, and browser check results
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TinanaiBuilderProjectUpdate"
+      responses:
+        "200":
+          description: Updated project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectResponse"
+        "400":
+          description: Invalid or unsafe project data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    delete:
+      operationId: deleteTinanaiBuilderProject
+      tags: [tinanai]
+      summary: Delete a project and its version history
+      responses:
+        "204":
+          description: Project deleted
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}/duplicate:
+    post:
+      operationId: duplicateTinanaiBuilderProject
+      tags: [tinanai]
+      summary: Duplicate a project owned by the signed-in user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "201":
+          description: Duplicated project with an initial version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}/versions:
+    get:
+      operationId: listTinanaiBuilderProjectVersions
+      tags: [tinanai]
+      summary: List a project's retained file snapshots
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Project versions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectVersionsResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}/versions/{version}/restore:
+    post:
+      operationId: restoreTinanaiBuilderProjectVersion
+      tags: [tinanai]
+      summary: Restore a retained snapshot as a new version
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      responses:
+        "200":
+          description: Restored project
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderProjectResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project or version not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}/agent-runs:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: listTinanaiBuilderAgentRuns
+      tags: [tinanai]
+      summary: List agent runs for an owned project
+      responses:
+        "200":
+          description: Recent project agent runs
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderAgentRunsResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    post:
+      operationId: createTinanaiBuilderAgentRun
+      tags: [tinanai]
+      summary: Start a bounded, review-only engineering run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TinanaiBuilderAgentRunInput"
+      responses:
+        "202":
+          description: Agent run queued for planning and static review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderAgentRunResponse"
+        "400":
+          description: Invalid run request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "409":
+          description: This account already has an active agent run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: The recent run limit was reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}/agent-runs/{runId}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getTinanaiBuilderAgentRun
+      tags: [tinanai]
+      summary: Get a persisted agent run owned by the signed-in user
+      responses:
+        "200":
+          description: Agent run, tasks, and execution events
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderAgentRunResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Run or project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/projects/{id}/agent-runs/{runId}/cancel:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: runId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    post:
+      operationId: cancelTinanaiBuilderAgentRun
+      tags: [tinanai]
+      summary: Cancel an active agent run
+      responses:
+        "200":
+          description: Cancelled agent run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiBuilderAgentRunResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Run or project not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "409":
+          description: Run is no longer active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/documents:
+    get:
+      operationId: listKnowledgeDocuments
+      tags: [knowledge]
+      summary: List the signed-in user's Knowledge Library documents
+      responses:
+        "200":
+          description: Documents owned by the signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeDocumentsResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    post:
+      operationId: uploadKnowledgeDocument
+      tags: [knowledge]
+      summary: Upload and index a Knowledge Library document
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/KnowledgeDocumentUpload"
+      responses:
+        "200":
+          description: The same content is already indexed for this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeDocumentResponse"
+        "202":
+          description: Upload accepted for asynchronous extraction and indexing
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeDocumentResponse"
+        "400":
+          description: Unsupported or invalid document
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "413":
+          description: Upload exceeds the document safety limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Indexing queue is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/documents/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getKnowledgeDocument
+      tags: [knowledge]
+      summary: Get one document owned by the signed-in user
+      responses:
+        "200":
+          description: Document metadata and collection tags
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeDocumentResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    patch:
+      operationId: updateKnowledgeDocument
+      tags: [knowledge]
+      summary: Change a document's category and collection tags
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeDocumentUpdate"
+      responses:
+        "200":
+          description: Updated document metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeDocumentResponse"
+        "400":
+          description: Invalid document metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    delete:
+      operationId: deleteKnowledgeDocument
+      tags: [knowledge]
+      summary: Delete a document and all of its indexed chunks
+      responses:
+        "204":
+          description: Document and its chunks deleted
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/documents/{id}/reindex:
+    post:
+      operationId: reindexKnowledgeDocument
+      tags: [knowledge]
+      summary: Rebuild embeddings from the document's stored text chunks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "202":
+          description: Re-indexing accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeDocumentResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Document not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "409":
+          description: Document has no stored text chunks to re-index
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Indexing queue is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/collections:
+    get:
+      operationId: listKnowledgeCollections
+      tags: [knowledge]
+      summary: List the signed-in user's Knowledge Library collections
+      responses:
+        "200":
+          description: Collections owned by the signed-in user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeCollectionsResponse"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "409":
+          description: Collection name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    post:
+      operationId: createKnowledgeCollection
+      tags: [knowledge]
+      summary: Create a Knowledge Library collection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeCollectionInput"
+      responses:
+        "201":
+          description: Collection created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeCollectionResponse"
+        "400":
+          description: Invalid collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/collections/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: updateKnowledgeCollection
+      tags: [knowledge]
+      summary: Rename a Knowledge Library collection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeCollectionInput"
+      responses:
+        "200":
+          description: Updated collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeCollectionResponse"
+        "400":
+          description: Invalid collection
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "409":
+          description: Collection name already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+    delete:
+      operationId: deleteKnowledgeCollection
+      tags: [knowledge]
+      summary: Delete a collection without deleting its documents
+      responses:
+        "204":
+          description: Collection and its tags deleted
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Request limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "404":
+          description: Collection not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/search:
+    post:
+      operationId: searchKnowledge
+      tags: [knowledge]
+      summary: Search the signed-in user's indexed sources
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeSearchRequest"
+      responses:
+        "200":
+          description: Ranked source excerpts with verifiable references
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeSearchResponse"
+        "400":
+          description: Invalid search request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+  /tinanai/knowledge/ask:
+    post:
+      operationId: askKnowledge
+      tags: [knowledge]
+      summary: Answer using retrieved Knowledge Library sources
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeAskRequest"
+      responses:
+        "200":
+          description: Source-grounded answer and citations
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeAskResponse"
+        "400":
+          description: Invalid question
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "401":
+          description: Sign-in required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "429":
+          description: Request limit reached
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+        "500":
+          description: The answer could not be completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TinanaiApiError"
+components:
+  schemas:
+    TinanMainnetDiagnostics:
+      type: object
+      required: [checkedAt, targetId, sourceSha256, creationBytecodeHash, runtimeBytecodeHash, historicalContracts, approvedDeployer, gasSimulationEnabled, checks, rpc]
+      properties:
+        checkedAt: { type: string }
+        targetId: { type: string }
+        sourceSha256: { type: string }
+        creationBytecodeHash: { type: string }
+        runtimeBytecodeHash: { type: string }
+        historicalContracts: { type: array, items: { type: string } }
+        approvedDeployer: { type: [string, "null"] }
+        gasSimulationEnabled: { type: boolean, enum: [false] }
+        checks: { type: array, items: { $ref: "#/components/schemas/TinanReadinessCheck" } }
+        rpc:
+          type: object
+          required: [status, detail, chainId, blockNumber, blockHash, blockTime, balanceEth, nonce, pendingNonce]
+          properties:
+            status: { type: string, enum: [PASS, FAIL, BLOCKED] }
+            detail: { type: string }
+            chainId: { type: [integer, "null"] }
+            blockNumber: { type: [string, "null"] }
+            blockHash: { type: [string, "null"] }
+            blockTime: { type: [string, "null"] }
+            balanceEth: { type: [string, "null"] }
+            nonce: { type: [string, "null"] }
+            pendingNonce: { type: [string, "null"] }
+    TinanMarketplaceOrderInput:
+      type: object
+      required: [request]
+      properties:
+        request: { type: string, minLength: 10, maxLength: 2000 }
+    TinanMarketplaceResolution:
+      type: object
+      required: [status, response]
+      properties:
+        status: { type: string, enum: [fulfilled, rejected] }
+        response: { type: string, minLength: 10, maxLength: 2000 }
+    TinanMarketplaceOrder:
+      type: object
+      required: [id, invoiceId, request, status, response, createdAt, resolvedAt]
+      properties:
+        id: { type: string }
+        invoiceId: { type: string }
+        request: { type: string }
+        status: { type: string, enum: [open, fulfilled, rejected] }
+        response: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        resolvedAt: { type: [string, "null"], format: date-time }
+    TinanMainnetApproval:
+      type: object
+      additionalProperties: false
+      required: [approvedDeployer, revision]
+      properties:
+        approvedDeployer: { type: [string, "null"], maxLength: 42 }
+        revision: { type: [string, "null"] }
+    TinanMainnetConfig:
+      allOf:
+        - $ref: "#/components/schemas/TinanMainnetApproval"
+        - type: object
+          required: [rpcConfigured, cliDeployerConfigured, cliDeployerMatches, catalogUrlConfigured, application, payment]
+          properties:
+            rpcConfigured: { type: boolean }
+            cliDeployerConfigured: { type: boolean }
+            cliDeployerMatches: { type: boolean }
+            catalogUrlConfigured: { type: boolean }
+            application:
+              type: object
+              required: [environment, buildId]
+              properties:
+                environment: { type: string, enum: [development, production, unknown] }
+                buildId: { type: [string, "null"] }
+            payment:
+              type: [object, "null"]
+              required: [chainId, confirmations, enabled, tokenAddress, treasuryAddress, tinanPerEur]
+              properties:
+                chainId: { type: integer }
+                confirmations: { type: integer }
+                enabled: { type: boolean }
+                tokenAddress: { type: [string, "null"] }
+                treasuryAddress: { type: [string, "null"] }
+                tinanPerEur: { type: [string, "null"] }
+    TinanMainnetWallet:
+      type: object
+      additionalProperties: false
+      required: [connectedAddress, walletChainId, connectorType]
+      properties:
+        connectedAddress: { type: [string, "null"], maxLength: 42 }
+        walletChainId: { type: [integer, "null"] }
+        connectorType: { type: [string, "null"], maxLength: 80 }
+    TinanMainnetReport:
+      type: object
+      required: [ready, checkedAt, blockers, checks, infrastructureConfigured, tokenVerified, paymentConfigured, checkoutEnabled, approvedDeployer, connectedAddress, addressesMatch, chainId, balanceEth, estimatedGas, gasLimit, estimatedCostEth, maximumCostEth, creationBytecodeHash, runtimeBytecodeHash, constructorArguments, existingAddresses, deploymentRecordsChecked, paymentCheckoutDisabled]
+      properties:
+        ready: { type: boolean }
+        checkedAt: { type: string }
+        blockers: { type: array, items: { type: string } }
+        checks:
+          type: array
+          items: { $ref: "#/components/schemas/TinanReadinessCheck" }
+        infrastructureConfigured: { type: boolean }
+        tokenVerified: { type: [boolean, "null"] }
+        paymentConfigured: { type: boolean }
+        checkoutEnabled: { type: boolean }
+        approvedDeployer: { type: [string, "null"] }
+        connectedAddress: { type: [string, "null"] }
+        addressesMatch: { type: boolean }
+        chainId: { type: [integer, "null"] }
+        balanceEth: { type: [string, "null"] }
+        estimatedGas: { type: [string, "null"] }
+        gasLimit: { type: [string, "null"] }
+        estimatedCostEth: { type: [string, "null"] }
+        maximumCostEth: { type: [string, "null"] }
+        creationBytecodeHash: { type: string }
+        runtimeBytecodeHash: { type: string }
+        constructorArguments: { type: [string, "null"] }
+        existingAddresses: { type: array, items: { type: string } }
+        deploymentRecordsChecked: { type: boolean }
+        paymentCheckoutDisabled: { type: boolean }
+    TinanReadinessCheck:
+      type: object
+      required: [id, label, status, detail, mandatory]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        status: { type: string, enum: [PASS, FAIL, BLOCKED, NOT_TESTED] }
+        detail: { type: string }
+        mandatory: { type: boolean }
+    TinanPaymentSettings:
+      type: object
+      required: [enabled, chainId, tokenAddress, treasuryAddress, tinanPerEur, rateSource, confirmations, revision]
+      properties:
+        enabled: { type: boolean }
+        chainId: { type: integer, enum: [1, 11155111] }
+        tokenAddress: { type: [string, "null"] }
+        treasuryAddress: { type: [string, "null"] }
+        tinanPerEur: { type: [string, "null"], maxLength: 40 }
+        rateSource: { type: string, maxLength: 200 }
+        confirmations: { type: integer, minimum: 12, maximum: 100 }
+        revision: { type: integer, minimum: 0 }
+    TinanPaymentService:
+      type: object
+      required: [slug, name, description, route, eurCents, enabled, requiresPayment]
+      properties:
+        slug: { type: string, enum: [ai-builder, ai-agents, app-generation, contract-generation, data-tokenization, marketplace] }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        description: { type: string, maxLength: 400 }
+        route: { type: string }
+        eurCents: { type: [integer, "null"], minimum: 1, maximum: 100000000 }
+        enabled: { type: boolean }
+        requiresPayment: { type: boolean }
+    TinanPaymentConfiguration:
+      type: object
+      required: [settings, services]
+      properties:
+        settings: { $ref: "#/components/schemas/TinanPaymentSettings" }
+        services:
+          type: array
+          minItems: 6
+          maxItems: 6
+          items: { $ref: "#/components/schemas/TinanPaymentService" }
+    TinanPaymentCatalog:
+      allOf:
+        - { $ref: "#/components/schemas/TinanPaymentConfiguration" }
+        - type: object
+          required: [ready, reason, rateKind]
+          properties:
+            ready: { type: boolean }
+            reason: { type: [string, "null"] }
+            rateKind: { type: string, enum: [administrator-set] }
+    TinanWalletInput:
+      type: object
+      required: [payer]
+      properties:
+        payer: { type: string, pattern: "^0x[0-9a-fA-F]{40}$" }
+    TinanWalletChallenge:
+      type: object
+      required: [id, message, expiresAt]
+      properties:
+        id: { type: string }
+        message: { type: string }
+        expiresAt: { type: string, format: date-time }
+    TinanInvoiceInput:
+      type: object
+      required: [serviceSlug, challengeId, signature]
+      properties:
+        serviceSlug: { type: string }
+        challengeId: { type: string, format: uuid }
+        signature: { type: string, pattern: "^0x[0-9a-fA-F]+$", maxLength: 4096 }
+    TinanTransactionInput:
+      type: object
+      required: [txHash]
+      properties:
+        txHash: { type: string, pattern: "^0x[0-9a-fA-F]{64}$" }
+    TinanPaymentInvoice:
+      type: object
+      required: [id, serviceSlug, serviceName, payer, chainId, tokenAddress, treasuryAddress, eurCents, tinanPerEur, rateSource, amountAtomic, amountTinan, status, confirmations, requiredConfirmations, createdAt, expiresAt, txHash, error, confirmedAt, blockNumber]
+      properties:
+        id: { type: string }
+        serviceSlug: { type: string }
+        serviceName: { type: string }
+        payer: { type: string }
+        chainId: { type: integer }
+        tokenAddress: { type: string }
+        treasuryAddress: { type: string }
+        eurCents: { type: integer }
+        tinanPerEur: { type: string }
+        rateSource: { type: string }
+        amountAtomic: { type: string }
+        amountTinan: { type: string }
+        status: { type: string, enum: [created, pending, confirming, confirmed, failed, expired] }
+        confirmations: { type: integer }
+        requiredConfirmations: { type: integer }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        txHash: { type: [string, "null"] }
+        error: { type: [string, "null"] }
+        confirmedAt: { type: [string, "null"], format: date-time }
+        blockNumber: { type: [string, "null"] }
+    TinanServiceCredit:
+      type: object
+      required: [serviceSlug, available]
+      properties:
+        serviceSlug: { type: string }
+        available: { type: integer }
+    TinanPaymentAccount:
+      type: object
+      required: [invoices, credits, isAdmin]
+      properties:
+        invoices:
+          type: array
+          items: { $ref: "#/components/schemas/TinanPaymentInvoice" }
+        credits:
+          type: array
+          items: { $ref: "#/components/schemas/TinanServiceCredit" }
+        isAdmin: { type: boolean }
+    TinanPaymentAdmin:
+      type: object
+      required: [catalog, invoices]
+      properties:
+        catalog: { $ref: "#/components/schemas/TinanPaymentCatalog" }
+        invoices:
+          type: array
+          items: { $ref: "#/components/schemas/TinanPaymentInvoice" }
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    EurikaOverview:
+      type: object
+      properties:
+        contractAddress:
+          type: string
+        chainName:
+          type: string
+        chainId:
+          type: integer
+        codeStatus:
+          type: string
+          enum: [deployed, not_deployed, unavailable]
+        verificationStatus:
+          type: string
+          enum: [verified, unverified, unavailable]
+        contractType:
+          type: ["string", "null"]
+        contractTypeSource:
+          type: string
+          enum: [verified_source, explorer_metadata, unavailable]
+        proxyStatus:
+          type: ["string", "null"]
+        ownerAddress:
+          type: ["string", "null"]
+        adminAddress:
+          type: ["string", "null"]
+        functionsStatus:
+          type: string
+          enum: [available, unavailable]
+        supportedFunctions:
+          type: array
+          items:
+            $ref: "#/components/schemas/EurikaAbiEntry"
+        tokenMetadata:
+          $ref: "#/components/schemas/EurikaTokenMetadata"
+        recentTransactions:
+          type: array
+          items:
+            $ref: "#/components/schemas/EurikaTransaction"
+        recentLogs:
+          type: array
+          items:
+            $ref: "#/components/schemas/EurikaRawLog"
+        activityByDay:
+          type: array
+          items:
+            $ref: "#/components/schemas/EurikaActivityPoint"
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/EurikaSourceStatus"
+        integrationHealth:
+          type: string
+          enum: [operational, limited, unavailable]
+        readCapability:
+          type: string
+          enum: [explorer_data_only, contract_reads_unavailable, unavailable]
+        writeCapability:
+          type: string
+          enum: [disabled]
+        checkedAt:
+          type: string
+          format: date-time
+      required:
+        - contractAddress
+        - chainName
+        - chainId
+        - codeStatus
+        - verificationStatus
+        - contractType
+        - contractTypeSource
+        - proxyStatus
+        - ownerAddress
+        - adminAddress
+        - functionsStatus
+        - supportedFunctions
+        - tokenMetadata
+        - recentTransactions
+        - recentLogs
+        - activityByDay
+        - sources
+        - integrationHealth
+        - readCapability
+        - writeCapability
+        - checkedAt
+    EurikaAbiEntry:
+      type: object
+      properties:
+        kind:
+          type: string
+          enum: [function, event]
+        name:
+          type: string
+        signature:
+          type: string
+      required: [kind, name, signature]
+    EurikaTokenMetadata:
+      type: object
+      properties:
+        name:
+          type: ["string", "null"]
+        symbol:
+          type: ["string", "null"]
+        decimals:
+          type: ["integer", "null"]
+        totalSupplyRaw:
+          type: ["string", "null"]
+        holderCount:
+          type: ["integer", "null"]
+        classification:
+          type: ["string", "null"]
+        source:
+          type: string
+          enum: [explorer_metadata, unavailable]
+      required: [name, symbol, decimals, totalSupplyRaw, holderCount, classification, source]
+    EurikaTransaction:
+      type: object
+      properties:
+        hash:
+          type: string
+        timestamp:
+          type: ["string", "null"]
+          format: date-time
+        blockNumber:
+          type: ["integer", "null"]
+        fromAddress:
+          type: string
+        toAddress:
+          type: ["string", "null"]
+        method:
+          type: ["string", "null"]
+        status:
+          type: string
+        valueWei:
+          type: string
+      required: [hash, timestamp, blockNumber, fromAddress, toAddress, method, status, valueWei]
+    EurikaRawLog:
+      type: object
+      properties:
+        transactionHash:
+          type: string
+        blockNumber:
+          type: ["integer", "null"]
+        timestamp:
+          type: ["string", "null"]
+          format: date-time
+        topics:
+          type: array
+          items:
+            type: string
+        data:
+          type: string
+      required: [transactionHash, blockNumber, timestamp, topics, data]
+    EurikaActivityPoint:
+      type: object
+      properties:
+        date:
+          type: string
+        transactionCount:
+          type: integer
+      required: [date, transactionCount]
+    EurikaSourceStatus:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [available, unavailable]
+        detail:
+          type: string
+      required: [name, status, detail]
+    TinanaiAssistantRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [chat, document, builder, tokenization]
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 12000
+        documentText:
+          type: string
+          maxLength: 20000
+        history:
+          type: array
+          maxItems: 12
+          items:
+            $ref: "#/components/schemas/TinanaiAssistantTurn"
+        greenLeafMode:
+          type: boolean
+        language:
+          type: string
+          enum: [en]
+      required: [mode, prompt]
+    TinanaiAssistantTurn:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          maxLength: 12000
+      required: [role, content]
+    TinanaiAssistantResponse:
+      type: object
+      properties:
+        reply:
+          type: string
+      required: [reply]
+    TinanaiResearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 2
+          maxLength: 3000
+        language:
+          type: string
+          enum: [en]
+      required: [query, language]
+    TinanaiResearchSource:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 240
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+      required: [title, url]
+    TinanaiResearchUsage:
+      type: object
+      properties:
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        totalTokens:
+          type: integer
+          minimum: 0
+      required: [inputTokens, outputTokens, totalTokens]
+    TinanaiResearchResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        sources:
+          type: array
+          maxItems: 12
+          items:
+            $ref: "#/components/schemas/TinanaiResearchSource"
+        usage:
+          $ref: "#/components/schemas/TinanaiResearchUsage"
+      required: [answer, sources, usage]
+    TinanaiCapability:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [operational, limited, not_configured]
+        detail:
+          type: string
+          maxLength: 500
+      required: [status, detail]
+    TinanaiCapabilities:
+      type: object
+      properties:
+        aiProvider:
+          $ref: "#/components/schemas/TinanaiCapability"
+        webSearch:
+          $ref: "#/components/schemas/TinanaiCapability"
+        githubAccess:
+          $ref: "#/components/schemas/TinanaiCapability"
+        sandboxExecution:
+          $ref: "#/components/schemas/TinanaiCapability"
+        browserTesting:
+          $ref: "#/components/schemas/TinanaiCapability"
+        deploymentIntegrations:
+          $ref: "#/components/schemas/TinanaiCapability"
+        usageControls:
+          $ref: "#/components/schemas/TinanaiCapability"
+        accountOwnership:
+          $ref: "#/components/schemas/TinanaiCapability"
+      required: [aiProvider, webSearch, githubAccess, sandboxExecution, browserTesting, deploymentIntegrations, usageControls, accountOwnership]
+    TinanaiApiError:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
+    TinanaiBuilderRequest:
+      type: object
+      properties:
+        outputType:
+          type: string
+          enum: [app, token, analytics, json]
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 12000
+        language:
+          type: string
+          enum: [en]
+        files:
+          type: array
+          maxItems: 20
+          items:
+            type: string
+            format: binary
+      required: [outputType, prompt]
+    TinanaiBuilderArtifact:
+      type: object
+      properties:
+        path:
+          type: string
+        content:
+          type: string
+        mediaType:
+          type: string
+      required: [path, content, mediaType]
+    TinanaiBuilderUpload:
+      type: object
+      properties:
+        name:
+          type: string
+        size:
+          type: integer
+        format:
+          type: string
+        extractedCharacters:
+          type: integer
+        truncated:
+          type: boolean
+        warning:
+          type: ["string", "null"]
+      required: [name, size, format, extractedCharacters, truncated, warning]
+    TinanaiBuilderColumn:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+          enum: [string, number, boolean, date]
+        missing:
+          type: integer
+        min:
+          type: ["number", "null"]
+        max:
+          type: ["number", "null"]
+        mean:
+          type: ["number", "null"]
+      required: [name, type, missing, min, max, mean]
+    TinanaiAnalyticsPoint:
+      type: object
+      properties:
+        label:
+          type: string
+        value:
+          type: number
+      required: [label, value]
+    TinanaiAnalyticsChart:
+      type: object
+      properties:
+        title:
+          type: string
+        categoryColumn:
+          type: string
+        valueColumn:
+          type: string
+        aggregation:
+          type: string
+        points:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TinanaiAnalyticsPoint"
+        sampled:
+          type: boolean
+      required: [title, categoryColumn, valueColumn, aggregation, points, sampled]
+    TinanaiAnalyticsCell:
+      oneOf:
+        - type: string
+        - type: number
+        - type: boolean
+        - type: "null"
+    TinanaiAnalyticsRow:
+      type: object
+      additionalProperties:
+        $ref: "#/components/schemas/TinanaiAnalyticsCell"
+    TinanaiAnalyticsDataset:
+      type: object
+      properties:
+        sourceName:
+          type: string
+        sheetName:
+          type: ["string", "null"]
+        rowCount:
+          type: integer
+        columnCount:
+          type: integer
+        duplicateRows:
+          type: integer
+        truncated:
+          type: boolean
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderColumn"
+        previewRows:
+          type: array
+          maxItems: 12
+          items:
+            $ref: "#/components/schemas/TinanaiAnalyticsRow"
+        chart:
+          oneOf:
+            - $ref: "#/components/schemas/TinanaiAnalyticsChart"
+            - type: "null"
+        cleanCsvUrl:
+          type: ["string", "null"]
+        cleanCsvBytes:
+          type: ["integer", "null"]
+      required: [sourceName, sheetName, rowCount, columnCount, duplicateRows, truncated, columns, previewRows, chart, cleanCsvUrl, cleanCsvBytes]
+    TinanaiTokenCompilation:
+      type: object
+      properties:
+        contractName:
+          type: string
+        compiled:
+          type: boolean
+        compilerVersion:
+          type: string
+        errors:
+          type: array
+          items:
+            type: string
+      required: [contractName, compiled, compilerVersion, errors]
+    TinanaiBuilderResponse:
+      type: object
+      properties:
+        outputType:
+          type: string
+          enum: [app, token, analytics, json]
+        summary:
+          type: string
+        uploads:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderUpload"
+        artifacts:
+          type: array
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderArtifact"
+        datasets:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiAnalyticsDataset"
+        tokenCompilation:
+          oneOf:
+            - $ref: "#/components/schemas/TinanaiTokenCompilation"
+            - type: "null"
+        warnings:
+          type: array
+          items:
+            type: string
+      required: [outputType, summary, uploads, artifacts, datasets, tokenCompilation, warnings]
+    TinanaiBuilderProjectFile:
+      type: object
+      properties:
+        path:
+          type: string
+          minLength: 1
+          maxLength: 240
+        content:
+          type: string
+          maxLength: 2000000
+        mediaType:
+          type: string
+          maxLength: 120
+      required: [path, content, mediaType]
+    TinanaiBuilderProjectSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+        appType:
+          type: string
+          enum: [web_app, dashboard, task_manager, landing_page]
+        framework:
+          type: string
+          enum: [static_html]
+        template:
+          type: string
+          enum: [ai_generated, blank, task_manager, dashboard]
+        version:
+          type: integer
+          minimum: 1
+        previewStatus:
+          type: string
+          enum: [not_run, ready, error]
+        buildStatus:
+          type: string
+          enum: [not_run, passed, failed, blocked]
+        buildDetails:
+          type: ["string", "null"]
+        buildAt:
+          type: ["string", "null"]
+          format: date-time
+        testStatus:
+          type: string
+          enum: [not_run, passed, failed, blocked]
+        testDetails:
+          type: ["string", "null"]
+        testAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, name, description, appType, framework, template, version, previewStatus, buildStatus, buildDetails, buildAt, testStatus, testDetails, testAt, createdAt, updatedAt]
+    TinanaiBuilderProject:
+      allOf:
+        - $ref: "#/components/schemas/TinanaiBuilderProjectSummary"
+        - type: object
+          properties:
+            files:
+              type: array
+              minItems: 1
+              maxItems: 20
+              items:
+                $ref: "#/components/schemas/TinanaiBuilderProjectFile"
+          required: [files]
+    TinanaiBuilderProjectInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          maxLength: 1000
+        appType:
+          type: string
+          enum: [web_app, dashboard, task_manager, landing_page]
+        framework:
+          type: string
+          enum: [static_html]
+        template:
+          type: string
+          enum: [ai_generated, blank, task_manager, dashboard]
+        files:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderProjectFile"
+      required: [name, description, appType, framework, template, files]
+    TinanaiBuilderProjectUpdate:
+      type: object
+      minProperties: 1
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        description:
+          type: string
+          maxLength: 1000
+        appType:
+          type: string
+          enum: [web_app, dashboard, task_manager, landing_page]
+        framework:
+          type: string
+          enum: [static_html]
+        template:
+          type: string
+          enum: [ai_generated, blank, task_manager, dashboard]
+        files:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderProjectFile"
+        previewStatus:
+          type: string
+          enum: [not_run, ready, error]
+        buildStatus:
+          type: string
+          enum: [not_run, passed, failed, blocked]
+        buildDetails:
+          type: ["string", "null"]
+          maxLength: 4000
+        buildAt:
+          type: ["string", "null"]
+          format: date-time
+        testStatus:
+          type: string
+          enum: [not_run, passed, failed, blocked]
+        testDetails:
+          type: ["string", "null"]
+          maxLength: 4000
+        testAt:
+          type: ["string", "null"]
+          format: date-time
+    TinanaiBuilderProjectResponse:
+      type: object
+      properties:
+        project:
+          $ref: "#/components/schemas/TinanaiBuilderProject"
+      required: [project]
+    TinanaiBuilderProjectsResponse:
+      type: object
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderProjectSummary"
+      required: [projects]
+    TinanaiBuilderProjectVersion:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          minimum: 1
+        summary:
+          type: string
+        files:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderProjectFile"
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, projectId, version, summary, files, createdAt]
+    TinanaiBuilderProjectVersionsResponse:
+      type: object
+      properties:
+        versions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderProjectVersion"
+      required: [versions]
+    TinanaiBuilderAgentRunInput:
+      type: object
+      properties:
+        prompt:
+          type: string
+          minLength: 1
+          maxLength: 4000
+      required: [prompt]
+    TinanaiBuilderAgentPlanTask:
+      type: object
+      properties:
+        key:
+          type: string
+          minLength: 1
+          maxLength: 48
+          pattern: "^[a-z0-9-]+$"
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        description:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        role:
+          type: string
+          enum: [master_architect, product_planner, ui_ux_designer, frontend_engineer, backend_engineer, database_engineer, api_engineer, web3_engineer, security_engineer, qa_test_engineer, debug_engineer, devops_engineer, documentation_engineer, code_reviewer]
+        dependsOn:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            maxLength: 48
+      required: [key, title, description, role, dependsOn]
+    TinanaiBuilderAgentPlan:
+      type: object
+      properties:
+        summary:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        architecture:
+          type: string
+          minLength: 1
+          maxLength: 3000
+        complexity:
+          type: string
+          enum: [low, medium, high]
+        tasks:
+          type: array
+          minItems: 1
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderAgentPlanTask"
+        risks:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+            maxLength: 500
+      required: [summary, architecture, complexity, tasks, risks]
+    TinanaiBuilderAgentFinding:
+      type: object
+      properties:
+        severity:
+          type: string
+          enum: [low, medium, high]
+        category:
+          type: string
+          maxLength: 80
+        path:
+          type: string
+          maxLength: 240
+        summary:
+          type: string
+          maxLength: 500
+      required: [severity, category, path, summary]
+    TinanaiBuilderAgentRunSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        request:
+          type: string
+          maxLength: 4000
+        status:
+          type: string
+          enum: [queued, running, awaiting_approval, failed, cancelled]
+        summary:
+          type: ["string", "null"]
+        plan:
+          oneOf:
+            - $ref: "#/components/schemas/TinanaiBuilderAgentPlan"
+            - type: "null"
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: ["string", "null"]
+          format: date-time
+        finishedAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [id, projectId, request, status, summary, plan, inputTokens, outputTokens, createdAt, updatedAt, startedAt, finishedAt]
+    TinanaiBuilderAgentTask:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        runId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        taskType:
+          type: string
+          enum: [agent, work_item]
+        role:
+          type: string
+          maxLength: 64
+        executorAvailable:
+          type: boolean
+        status:
+          type: string
+          enum: [queued, running, completed, failed, planned, blocked, cancelled]
+        taskKey:
+          type: ["string", "null"]
+        title:
+          type: string
+          maxLength: 120
+        description:
+          type: string
+          maxLength: 1000
+        dependsOn:
+          type: array
+          items:
+            type: string
+        result:
+          type: ["object", "null"]
+          additionalProperties: true
+        error:
+          type: ["string", "null"]
+          maxLength: 500
+        inputTokens:
+          type: integer
+          minimum: 0
+        outputTokens:
+          type: integer
+          minimum: 0
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        startedAt:
+          type: ["string", "null"]
+          format: date-time
+        finishedAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [id, runId, projectId, taskType, role, executorAvailable, status, taskKey, title, description, dependsOn, result, error, inputTokens, outputTokens, createdAt, updatedAt, startedAt, finishedAt]
+    TinanaiBuilderAgentEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        runId:
+          type: string
+          format: uuid
+        taskId:
+          type: ["string", "null"]
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        kind:
+          type: string
+          maxLength: 64
+        message:
+          type: string
+          maxLength: 500
+        details:
+          type: ["object", "null"]
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, runId, taskId, projectId, kind, message, details, createdAt]
+    TinanaiBuilderAgentRunResponse:
+      type: object
+      properties:
+        run:
+          $ref: "#/components/schemas/TinanaiBuilderAgentRunSummary"
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderAgentTask"
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderAgentEvent"
+      required: [run, tasks, events]
+    TinanaiBuilderAgentRunsResponse:
+      type: object
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/TinanaiBuilderAgentRunSummary"
+      required: [runs]
+    KnowledgeCategory:
+      type: string
+      enum:
+        - ai_engineering
+        - blockchain_solidity
+        - ethereum_standards
+        - web3_architecture
+        - crypto_tokenomics
+        - renewable_tokenization
+        - regulatory
+        - general
+    KnowledgeDocumentUpload:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+        category:
+          $ref: "#/components/schemas/KnowledgeCategory"
+        collectionIds:
+          type: array
+          maxItems: 12
+          items:
+            type: string
+            format: uuid
+      required: [file, category]
+    KnowledgeDocumentUpdate:
+      type: object
+      properties:
+        category:
+          $ref: "#/components/schemas/KnowledgeCategory"
+        collectionIds:
+          type: array
+          maxItems: 12
+          items:
+            type: string
+            format: uuid
+      required: [category, collectionIds]
+    KnowledgeCollectionInput:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 48
+        description:
+          type: ["string", "null"]
+          maxLength: 160
+      required: [name, description]
+    KnowledgeCollection:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: ["string", "null"]
+        documentCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, name, description, documentCount, createdAt]
+    KnowledgeDocument:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        filename:
+          type: string
+        category:
+          $ref: "#/components/schemas/KnowledgeCategory"
+        format:
+          type: string
+          enum: [pdf, docx, txt, md, json, csv, code, zip]
+        sizeBytes:
+          type: integer
+        status:
+          type: string
+          enum: [queued, processing, ready, error]
+        pageCount:
+          type: ["integer", "null"]
+        chunkCount:
+          type: integer
+        errorMessage:
+          type: ["string", "null"]
+        warning:
+          type: ["string", "null"]
+        redacted:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeCollectionTag"
+      required: [id, title, filename, category, format, sizeBytes, status, pageCount, chunkCount, errorMessage, warning, redacted, createdAt, updatedAt, collections]
+    KnowledgeCollectionTag:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+      required: [id, name]
+    KnowledgeDocumentResponse:
+      type: object
+      properties:
+        document:
+          $ref: "#/components/schemas/KnowledgeDocument"
+      required: [document]
+    KnowledgeDocumentsResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeDocument"
+      required: [documents]
+    KnowledgeCollectionsResponse:
+      type: object
+      properties:
+        collections:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeCollection"
+      required: [collections]
+    KnowledgeCollectionResponse:
+      type: object
+      properties:
+        collection:
+          $ref: "#/components/schemas/KnowledgeCollection"
+      required: [collection]
+    KnowledgeSearchRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 2
+          maxLength: 1000
+        category:
+          $ref: "#/components/schemas/KnowledgeCategory"
+        collectionId:
+          type: string
+          format: uuid
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 12
+          default: 8
+      required: [query]
+    KnowledgeAskRequest:
+      type: object
+      properties:
+        query:
+          type: string
+          minLength: 2
+          maxLength: 1000
+        category:
+          $ref: "#/components/schemas/KnowledgeCategory"
+        collectionId:
+          type: string
+          format: uuid
+        history:
+          type: array
+          maxItems: 6
+          items:
+            $ref: "#/components/schemas/KnowledgeChatTurn"
+        language:
+          type: string
+          enum: [en]
+      required: [query]
+    KnowledgeChatTurn:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+          maxLength: 2000
+      required: [role, content]
+    KnowledgeSource:
+      type: object
+      properties:
+        chunkId:
+          type: string
+          format: uuid
+        documentId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        filename:
+          type: string
+        category:
+          $ref: "#/components/schemas/KnowledgeCategory"
+        pageStart:
+          type: ["integer", "null"]
+        pageEnd:
+          type: ["integer", "null"]
+        section:
+          type: ["string", "null"]
+        excerpt:
+          type: string
+        score:
+          type: number
+          minimum: 0
+          maximum: 1
+      required: [chunkId, documentId, title, filename, category, pageStart, pageEnd, section, excerpt, score]
+    KnowledgeSearchResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeSource"
+      required: [results]
+    KnowledgeAskResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeSource"
+        insufficientEvidence:
+          type: boolean
+      required: [answer, citations, insufficientEvidence]
+
