@@ -1,0 +1,240 @@
+# TINAN AI
+
+TINAN AI is an AI-assisted project workspace built on Next.js App Router, React, and TypeScript. The public homepage is available at `/`; `/workspace`, `/projects`, and all API routes require the configured single-owner HTTP Basic Auth credentials.
+
+## Agent core
+
+- `POST /api/agent/tasks` accepts an objective (maximum 2,000 characters) and persists the task in D1. `GET /api/agent/tasks/:id` polls status across Worker requests and restarts; `/cancel` cancels active work; `/approval` records explicit approval or decline.
+- `TINAN_AI_PROVIDER` selects `demo` (default) or `openai-compatible`. Demo plans are deterministic and simulated; they never call a model or execute tools.
+- The OpenAI-compatible provider sends server-side requests to `/chat/completions` and validates the returned structured plan. Only the four registered tools can run: `project.info`, `files.read`, `tasks.track`, and `tests.propose`. Test commands are proposals only; no shell commands or file writes are executed.
+- Production/financial/destructive objectives wait for user approval. Approval does not enable unsupported deployment, financial, write, or shell operations.
+- File reading is disabled unless `TINAN_ENABLE_FILE_READING=true` and the user explicitly supplies authorized relative paths in the task request. Paths are checked against traversal, symlinks, secrets, and a 64 KiB limit.
+- The process-local limiter allows 20 task submissions per minute per server process. This is a coarse safeguard, not a substitute for authenticated, distributed production rate limiting.
+
+## Server environment
+
+All provider secrets are server-only. Do not prefix these values with `NEXT_PUBLIC_`.
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `TINAN_AI_PROVIDER` | No | `demo` (default) or `openai-compatible`. |
+| `TINAN_AI_API_KEY` | For real provider | API key, read only by server code. |
+| `TINAN_AI_MODEL` | For real provider | Model identifier supported by the configured endpoint. |
+| `TINAN_AI_BASE_URL` | No | OpenAI-compatible API base URL; defaults to `https://openrouter.ai/api/v1`. HTTPS is required except for localhost development. |
+| `TINAN_AI_TIMEOUT_MS` | No | Provider timeout from 1,000 to 60,000 ms; defaults to 20,000 ms. |
+| `TINAN_AUTH_USERNAME` | Required | Single-owner Basic Auth username for the application and API. |
+| `TINAN_REQUIRE_PLAN_DIGEST` | Optional | `true` makes `planDigest` mandatory on approval. |
+| `TINAN_MULTI_USER_ENABLED` / `TINAN_DELEGATION_SECRET` | Optional | Delegated per-user ownership. Off by default; see Multi-user delegation. |
+| `TINAN_AUTH_PASSWORD` | Required | Single-owner Basic Auth password; must be at least 32 characters. Set server-side and use HTTPS in production. |
+| `TINAN_ENABLE_FILE_READING` | No | Must be `true` to allow explicitly authorized workspace file reads. |
+| `TINAN_SANDBOX_VERIFIED` | No | Execution remains disabled. Setting this value does not enable project checks. |
+
+No real provider credentials were available during implementation, so provider integration was tested with mocked HTTP responses; a paid/external provider connection is not claimed.
+
+## Cloudflare Workers
+
+This project uses Next.js `16.4.3`, React `19.3.0`, `@opennextjs/cloudflare@1.20.13`, and Wrangler `4.154.0` (Node.js 22 or newer). The pinned Next/OpenNext versions satisfy the adapter's supported peer range. The adapter's `@opennextjs/aws` dependency is pinned to `4.1.8` to avoid vulnerable transitive releases; the current lockfile audit is clean. Authentication uses Next.js `proxy.ts`; OpenNext currently warns that Node.js proxy middleware support on Cloudflare is experimental, so this must be validated in the remote preview before production approval. `.node-version` selects Node 22. `npm run build` now runs the OpenNext Cloudflare build (`opennextjs-cloudflare build`, which invokes `next build` internally via `buildCommand` in `open-next.config.ts`) and verifies the `.open-next` artifacts; use `npm run build:next` for a plain Next.js build. Cloudflare's default `npm run build` + `npx wrangler deploy` therefore finds the compiled OpenNext config. `npm run build:cloudflare` is an alias; `npm run preview:cloudflare` runs that bundle locally, `npm run deploy:cloudflare:preview` deploys the isolated preview Worker, and `npm run deploy:cloudflare` targets the production Worker. The production command must only be run after preview verification and explicit release approval. Sandbox checks remain disabled by default.
+
+Project metadata, project and agent tasks, repair state, and distributed project locks are stored in D1. Generated file contents and rollback snapshots are stored in R2. Every project/task lookup and mutation is scoped by the authenticated owner ID; object keys also include that owner ID. Unit tests use SQLite-backed D1-compatible bindings and an R2 binding mock, then reload the store modules between operations to simulate separate requests and a Worker restart.
+
+### Provision durable storage
+
+Create separate durable resources for preview and production from the repository root:
+
+```bash
+npx wrangler d1 create tinan-ai-metadata
+npx wrangler r2 bucket create tinan-ai-project-files
+npx wrangler d1 create tinan-ai-metadata-preview
+npx wrangler r2 bucket create tinan-ai-project-files-preview
+```
+
+The deployment environment used for this work has no authenticated Cloudflare account, so no remote preview or production service could be created or verified. Before deploying, authenticate Wrangler with `npx wrangler login` (or provide an authorized `CLOUDFLARE_API_TOKEN`) and create the resources above in the intended account. Add each returned D1 ID as `database_id` in its matching `TINAN_DB` binding in `wrangler.jsonc`; never point preview at the production database. Do not deploy until the IDs and resources are present. Keep the names and binding identifiers aligned with the config:
+
+| Resource | Wrangler binding | Resource name |
+| --- | --- | --- |
+| D1 database | `TINAN_DB` | `tinan-ai-metadata` |
+| R2 bucket | `TINAN_PROJECT_FILES` | `tinan-ai-project-files` |
+| Preview D1 database | `TINAN_DB` in `env.preview` | `tinan-ai-metadata-preview` |
+| Preview R2 bucket | `TINAN_PROJECT_FILES` in `env.preview` | `tinan-ai-project-files-preview` |
+
+Apply the D1 migration to the remote database before deploying:
+
+```bash
+npx wrangler d1 migrations apply tinan-ai-metadata --remote
+npx wrangler d1 migrations apply tinan-ai-metadata-preview --remote --env preview
+```
+
+For local Worker development, initialize Wrangler's local D1 database first:
+
+```bash
+npx wrangler d1 migrations apply tinan-ai-metadata --local
+npm run preview:cloudflare
+```
+
+The top-level `tinanai2` Worker is the production target. The Wrangler `preview` environment deploys `tinanai2-preview` to its `workers.dev` URL and has its own D1 and R2 resources. D1 stores project and agent-task JSON metadata, ownership, check/repair state, and locks; R2 stores generated files and rollback snapshots. These bindings are server-side only and must never be exposed to browser code. Wrangler persists local state under the ignored `.wrangler/` directory.
+
+### Preview-first release
+
+The authenticated Cloudflare account is not available in this repository workspace. The following commands are the required operator steps after provisioning the preview resources and inserting its D1 ID into `env.preview`:
+
+```bash
+npx wrangler login
+npx wrangler d1 migrations apply tinan-ai-metadata-preview --remote --env preview
+npm run build:cloudflare
+npm run deploy:cloudflare:preview
+```
+
+The preview service URL is `https://tinanai2-preview.<account-subdomain>.workers.dev` after a successful deployment. Configure and verify the preview Worker's runtime settings and bindings before testing it. Do not promote or deploy production until the preview has been verified and the owner explicitly approves release. No DNS, custom domain, production deployment, or production secret changes are part of these steps.
+
+Project persistence tests verify create, update, retrieve, export, and rollback through newly loaded storage modules against the same D1/R2 backing data. Agent-task tests verify owner-scoped reads, durable transitions, interrupted-task recovery, and compare-and-set behavior across store reloads. These exercise the durable binding contract across request/module restarts; production Cloudflare account provisioning and remote persistence have not been tested from this environment.
+
+### Workers Builds screen
+
+When a production release is explicitly approved, configure **Workers Builds → Build settings** for the production service as follows. Keep production publishing disabled until then:
+
+- **Production branch:** `main` (merge this feature branch into `main` before enabling production builds).
+- **Root directory:** `/` (repository root).
+- **Build command:** `npm run build` (or `npm run build:cloudflare`).
+- **Deploy command:** `npm run deploy:cloudflare`.
+- **Build environment variable:** `NODE_VERSION=22` (also recorded in `.node-version`).
+- **Install command, if shown:** `npm ci`.
+
+Create a separate preview Worker/branch deployment using `env.preview`; it must use `npm run deploy:cloudflare:preview`, not the production command. This repository has no application deployment workflow. Cloudflare runtime bindings and secrets are configured on each Worker/environment; GitHub Actions secrets do not automatically become runtime bindings. Do not enable automatic production promotion.
+
+The Wrangler config enables only the default `workers.dev` endpoint; it has no custom-domain routes. After a successful deployment, Wrangler will report a URL in the form `https://tinanai2.<account-subdomain>.workers.dev`. The account subdomain is assigned by Cloudflare and cannot be confirmed until deployment in the authorized account. No domain, DNS record, nameserver, or registration is changed by this configuration.
+
+### Worker runtime settings
+
+Set the following under the matching Worker's **Settings → Variables and Secrets**. Configure preview and production separately; do not copy production credentials or point preview to production storage.
+
+| Name | Type | Value |
+| --- | --- | --- |
+| `TINAN_AUTH_USERNAME` | Variable | Your single-owner sign-in name. |
+| `TINAN_AUTH_PASSWORD` | Secret | A newly generated random value of at least 32 characters. |
+| `TINAN_AI_PROVIDER` | Variable | `openai-compatible` to enable real provider requests; `demo` keeps real requests disabled. |
+| `TINAN_AI_API_KEY` | Secret | Required only when real provider calls are approved; enter it directly in Cloudflare's secret UI. Do not paste it into source, build logs, or chat. |
+| `TINAN_AI_MODEL` | Variable | Exact model ID selected from OpenRouter. |
+| `TINAN_AI_BASE_URL` | Variable | `https://openrouter.ai/api/v1`. |
+| `TINAN_AI_TIMEOUT_MS` | Variable | Optional integer from `1000` to `60000`; e.g. `20000`. |
+| `TINAN_ENABLE_FILE_READING` | Variable | `false` unless explicitly needed. |
+| `TINAN_SANDBOX_VERIFIED` | Variable | `false`; execution remains disabled in code. |
+
+Set the provider to `openai-compatible` only when intentionally enabling paid/credit-consuming provider calls. Cloudflare secrets/variables are runtime settings and must be present on the deployed Worker; configure them separately for `tinanai2-preview` and `tinanai2`, because preview must not inherit production credentials. Build-time secrets are not a substitute. For local Wrangler preview, copy `.dev.vars.example` to `.dev.vars` and use test-only values. Never put a real provider key in the example file.
+
+## Project Builder
+
+- Visit `/projects` to submit natural-language requirements. A configured real provider first returns a structured plan; source generation starts only after explicit approval. Updating an existing project also requires a separate overwrite confirmation; matching generated paths may be replaced, other files are preserved, and a rollback snapshot is created. Planning itself makes a provider request and may incur provider charges. Without a configured provider, planning fails with a setup message and no project is claimed as generated.
+- Provider output is validated and limited to 12 files, 128 KiB total source, and safe relative paths. Project metadata/tasks are owner-scoped in D1; source files and rollback snapshots use owner-prefixed R2 keys.
+- Source export is a `.zip` containing generated source and a draft `deployment.config.json`. The draft does not deploy. Preview status remains “not started.”
+- Project execution and generated code checks are disabled in the interface and API; requests return unavailable and never spawn a process or execute model-generated commands.
+- After a failed check, one explicit AI repair attempt is available per project. Updates are diffed and the prior source can be restored from the durable R2 snapshot.
+
+## Persistence and deployment limits
+
+Authenticated app routes and APIs require a single-owner HTTP Basic Auth credential configured with `TINAN_AUTH_USERNAME` and a generated 32+ character `TINAN_AUTH_PASSWORD`; the public homepage is intentionally accessible without credentials. Unsafe methods require a same-origin `Origin`/`Referer`, and production requests require HTTPS. The username is reduced to an opaque SHA-256 owner ID, which is stored with projects/tasks and checked in D1 queries for reads, updates, exports, repair, rollback, and cancellation. This remains a single shared account, not multi-user authentication: do not expose the service to untrusted users. Project/task metadata is durable in D1 and source/snapshots are durable in R2; transient abort controllers and coarse rate-limit counters remain process-local. Existing filesystem-only projects are not automatically migrated and are not visible through the D1-backed APIs.
+
+The app sets `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, and `Permissions-Policy` headers. Authentication does not provide a user-management or password-reset flow.
+
+## Phase 4 verification status
+
+- Real provider/project generation was not verified in the development environment: `TINAN_AI_PROVIDER`, `TINAN_AI_API_KEY`, and `TINAN_AI_MODEL` were not configured, and no local environment file was present. Configure those server-only values (optionally `TINAN_AI_BASE_URL` and `TINAN_AI_TIMEOUT_MS`) in the deployment secret manager, then run a small plan-and-approval generation request and verify its persisted files and archive. Never place the API key in a `NEXT_PUBLIC_` variable, source control, or logs.
+- Project checks and execution are disabled by the implementation; no Docker isolation is claimed. `TINAN_SANDBOX_VERIFIED` remains `false`.
+- Tests cover mocked provider responses/failures/timeouts, structured project planning and approval before source generation, D1/R2-compatible project create/update/retrieve/export/rollback across fresh store modules, cleanup retry after R2 errors, owner filtering, path traversal rejection, durable agent/project task persistence and cancellation, stale-update protection, and disabled execution. These tests do not prove remote Cloudflare account provisioning, live OpenRouter connectivity, or production storage availability.
+
+### Manual OpenRouter website generation test
+
+Only run this after configuring `TINAN_AI_PROVIDER=openai-compatible`, the OpenRouter key as server-side `TINAN_AI_API_KEY`, the exact OpenRouter model ID as `TINAN_AI_MODEL`, `TINAN_AI_BASE_URL=https://openrouter.ai/api/v1`, and the two `TINAN_AUTH_*` values on the application host. The command below makes a real provider request and may incur charges; it does not pass the OpenRouter key to curl. Set `TINAN_AUTH_USERNAME` locally and curl will prompt for the corresponding Basic Auth password.
+
+```bash
+APP_ORIGIN='https://tinanai2.<account-subdomain>.workers.dev'
+TASK_ID=$(curl --fail-with-body --silent --show-error \
+  --user "$TINAN_AUTH_USERNAME" \
+  --header "Origin: $APP_ORIGIN" \
+  --header 'Content-Type: application/json' \
+  --data '{"requirements":"Build a minimal responsive sample services website. Include a homepage, semantic header and navigation, hero section, services section, and footer. Return actual HTML and CSS source files. Do not include shell commands."}' \
+  "$APP_ORIGIN/api/projects" | jq -r '.task.id')
+
+while :; do
+  TASK=$(curl --fail-with-body --silent --show-error \
+    --user "$TINAN_AUTH_USERNAME" \
+    "$APP_ORIGIN/api/projects/tasks/$TASK_ID")
+  STATUS=$(printf '%s' "$TASK" | jq -r '.task.status')
+  [ "$STATUS" != 'generating' ] && break
+  sleep 2
+done
+
+PROJECT_ID=$(printf '%s' "$TASK" | jq -r '.task.projectId')
+test "$STATUS" = 'completed' && test "$PROJECT_ID" != 'null'
+curl --fail-with-body --silent --show-error \
+  --user "$TINAN_AUTH_USERNAME" \
+  "$APP_ORIGIN/api/projects/$PROJECT_ID" | jq '.project.files'
+curl --fail-with-body --silent --show-error \
+  --user "$TINAN_AUTH_USERNAME" \
+  --output tinan-sample-services.zip \
+  "$APP_ORIGIN/api/projects/$PROJECT_ID/export"
+unzip -l tinan-sample-services.zip
+```
+
+This live test has not been run from this environment. A successful mocked unit test does not establish OpenRouter connectivity or live generation.
+
+## EurekaCore integration contract (v1.0; live integration unverified)
+
+EurekaCore's `docs/TINANAI_INTEGRATION_CONTRACT.md` documents contract v1.0, and its server-only `src/server/tinanai-provider.ts` adapter calls the existing TINAN AI agent API. The integration boundary is implemented in EurekaCore; TINAN AI does not call EurekaCore or expose the proposed `/api/v1/tasks` routes. No duplicate endpoint or unauthenticated proxy is added here.
+
+- **Submit:** EurekaCore sends `POST /api/agent/tasks` with `{ "objective": "..." }` (maximum 2,000 characters and 16 KiB body), then polls `GET /api/agent/tasks/{id}`. It may send `POST /api/agent/tasks/{id}/cancel` after abort. EurekaCore does not call TINAN AI's approval endpoint; TINAN-side approval is not EurekaCore authorization.
+- **Authentication:** HTTPS server-to-server calls use TINAN AI's HTTP Basic Auth (`TINAN_AUTH_USERNAME` and `TINAN_AUTH_PASSWORD`) and a same-origin `Origin` on non-GET requests. EurekaCore keeps its `TINANAI_BASE_URL`, `TINANAI_USERNAME`, and `TINANAI_PASSWORD` as server-side Worker secrets. TINAN AI still has a single shared owner identity, not per-service grants or multi-user authorization.
+- **Task state and results:** Agent tasks and transitions persist in D1 and are owner-scoped. A Worker interruption leaves active planning/execution tasks recoverable as a persisted failure when next read after the 15-minute stale threshold. EurekaCore maps supported task status, summary, plan notes, and registered tool results to its strict contract; proposed actions remain advisory and carry no authority.
+- **Verified limits:** EurekaCore contract tests use a fake `fetch`; no authorized live request to a deployed TINAN AI service has been verified. The TINAN AI API remains protected by the documented Basic Auth and owner checks; this change does not establish service-level authorization, idempotent submission, or real Cloudflare D1 availability.
+
+## EurekaCore integration contract v1.1 (digest, manifest, delegation)
+
+Contract v1.1 is additive to v1.0 and is mirrored in EurekaCore's `docs/TINANAI_INTEGRATION_CONTRACT.md`.
+
+| Capability | Behaviour | Status |
+| --- | --- | --- |
+| Plan digest | `planDigest = sha256(JSON.stringify(['eureka.builder-plan.v1', summary, technology, features, steps]))`, `0x`-prefixed lowercase hex, fixed when the plan is stored. Returned as `task.planDigest`. | unit-tested |
+| Approval | `POST /api/projects/tasks/:id/approval` accepts `{approved, planDigest?, confirmOverwrite?}`. A digest that differs from the stored plan, or a stored plan that no longer hashes to its digest, returns **409 `PLAN_DIGEST_MISMATCH`** and generation does not start. A malformed digest returns 400. Set `TINAN_REQUIRE_PLAN_DIGEST=true` to make the digest mandatory (400 `PLAN_DIGEST_REQUIRED`). | unit-tested (store); route wiring typechecked |
+| Manifest | `GET /api/projects/tasks/:id/manifest` returns `{manifest:{contractVersion:'1.1', taskId, projectId, ownerId, planDigest, files:[{path,bytes,sha256}], totalBytes, manifestDigest}}` for a **completed** task owned by the caller. Never returns contents. Limits: 1-24 files, 128 KiB per file, 256 KiB total (422 `LIMIT_EXCEEDED`); 404 for unknown/other-owner tasks; 409 `NOT_COMPLETED`. | unit-tested |
+| File read | `GET /api/projects/:id/files?path=` additionally returns `bytes` and `sha256` (SHA-256 of UTF-8 content, `0x` hex). | typechecked |
+| Cancellation | `POST /api/projects/tasks/:id/cancel` is a durable compare-and-set; a cancelled task cannot be approved. | unit-tested |
+| Durable state | Tasks, plans and digests persist in D1; files in R2. No new migration is required: `planDigest` is stored inside the existing task JSON and derived for older tasks. | unit-tested |
+
+### Multi-user delegation (disabled by default)
+
+The Basic-auth service credential stays mandatory. A trusted caller (EurekaCore) may additionally send `x-eureka-delegation: v1.<base64url payload>.<hex HMAC-SHA256>` signed with `TINAN_DELEGATION_SECRET` (at least 32 characters and different from the password). The payload is `{sub, aud:'tinan-ai', iat, exp}` with a lifetime of at most 300 s. The owner id becomes `sha256('tinan-delegated-owner:v1:' + sub)`, so each verified user sees only their own tasks and projects.
+
+- If the header is present while `TINAN_MULTI_USER_ENABLED` is not `true`, the request is rejected with 403 `MULTI_USER_DISABLED`; it is never served as the single owner.
+- Invalid, expired, wrong-audience or tampered tokens return 401 `INVALID_DELEGATION`.
+- Existing single-owner data stays under the original owner id and is not visible to delegated users.
+- Do not enable multi-user mode until EurekaCore persists the creating user per workflow and a live end-to-end isolation test passes.
+
+## Cloudflare deployment readiness — workers.dev
+
+No Cloudflare account was authenticated from this workspace, so the preview Worker has not been remotely deployed and the production Worker has not been deployed. Do not change DNS or publish production without explicit owner approval. All items below remain required before production use:
+
+- [ ] Replace single-owner Basic Auth with the selected production identity provider before multi-user use; preserve server-side ownership checks, origin protections, and HTTPS.
+- [ ] Create separate preview and production D1 databases and R2 buckets; set each `database_id` in its corresponding Wrangler D1 binding, apply migrations, deploy `tinanai2-preview`, and verify auth, persistence, generation (if an approved provider is configured), export, and restart recovery.
+- [ ] Configure D1/R2 backups, retention, restore drills, and distributed rate limits before production. Existing filesystem-only projects require a separately planned migration.
+- [ ] Configure the preview and production Worker runtime variables and secrets listed above in Cloudflare's **Settings → Variables and Secrets**. Keep the two environments' credentials separate; only enable paid provider requests when approved.
+- [ ] Keep project execution disabled. Any future execution feature needs a separately reviewed isolated execution service; do not enable it by setting a flag or exposing Docker to the Worker.
+- [ ] Verify the Next.js `proxy.ts` authentication behavior on the remote Cloudflare preview; OpenNext reports Node.js proxy middleware support as experimental.
+- [ ] Verify HTTPS and security headers on both `workers.dev` endpoints; production remains on `workers.dev` until a custom domain and DNS change are separately approved.
+- [ ] Configure distributed rate limits and execution budgets, provider and sandbox timeouts, structured redacted audit logs, metrics/alerts, error tracking, and operational runbooks. Ensure logs never contain provider keys or sensitive project contents.
+- [ ] Validate generation, file persistence, export, authorization/isolation, backup restoration, sandbox checks, cancellation, and failure recovery in staging. Run dependency/security checks and production build before requesting deployment approval.
+- [ ] Prepare a rollback plan and verify backups and monitoring before any approved release.
+
+## Dependency audit
+
+The checked-in lockfile was audited after the framework and Cloudflare adapter upgrade; `npm audit` reported zero vulnerabilities. Re-run the audit before each deployment because advisories and compatible fixes change.
+
+## Local development and validation
+
+```bash
+npm ci
+npm run dev
+npm test
+npm run lint
+npm run build
+```
+
+Re-run `npm audit` before each deployment; advisories and compatible fixes can change.

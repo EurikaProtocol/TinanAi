@@ -1,0 +1,10 @@
+{
+  "notice": "Template only. No contracts have been deployed by creating this file.",
+  "chainId": 11155111,
+  "status": "not-deployed",
+  "deployer": null,
+  "tokenAddress": null,
+  "coreAddress": null,
+  "tokenDeploymentTxHash": null,
+  "coreDeploymentTxHash": null
+}

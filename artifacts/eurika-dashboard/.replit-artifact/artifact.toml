@@ -1,0 +1,28 @@
+kind = "data-app"
+previewPath = "/eurika-dashboard/"
+title = "EURIKA Protocol Dashboard"
+description = "A read-only dashboard for checking Ethereum Mainnet contract metadata, verification, transaction history, and integration health for the supplied EURIKA Protocol address."
+version = "1.0.0"
+id = "artifacts/eurika-dashboard"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/eurika-dashboard/" ]
+localPort = 22751
+
+[services.development]
+run = "pnpm --filter @workspace/eurika-dashboard run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/eurika-dashboard", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/eurika-dashboard/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22751"
+BASE_PATH = "/eurika-dashboard/"

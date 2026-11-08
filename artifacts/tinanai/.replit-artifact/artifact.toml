@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "TINANAI"
+description = "TINANAI — Intelligence. Data. Creation. An AI-powered workspace for exploring insights, analyzing documents, shaping applications, managing digital assets, and planning tokenization with EUREKA CORE."
+version = "1.0.0"
+id = "artifacts/tinanai"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 22481
+
+[services.development]
+run = "pnpm --filter @workspace/tinanai run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/tinanai", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/tinanai/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22481"
+BASE_PATH = "/"
